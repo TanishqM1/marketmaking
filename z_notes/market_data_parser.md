@@ -1,8 +1,10 @@
 Phase 1) Parsing market data as per SBE, and construct the minimal things we need from it. 
-- types/ the structs that we need to parse information into. What does market data look like? What are the primitives?
-- codec/ is for the SBE schema, decoder schema. (buffer of pre-determined bytes, into typed messages). this does NOT handle I/O, Sockets, etc.
-- transport/ is for the UDP socket implementation. This gives us a pointer, and the length of the bytes. That's all.
 
+1. Define XML Schema `codec/schema`
+2. Define primitive typs structs `types/` for type safety
+3. Create Encocder + Decoder for one message type (Add Order) to get it in memory. `codec/`
+4. Write tests to check encode -> decode -> compare path. `tests/codec`
+5. Repeat for all message types.
 
 This is the format that we will recieve data in (but SBE of course)
 ```
@@ -49,9 +51,8 @@ Now when trades are matched, we get "E" orders to know what order we need to del
 the aggressor (if there is one!) comes in as a separate "A" add order
 
 Parsing SBE:
-1) We read the length & ordertype (first 8 bytes) of the message
+1) We read message header (first 8 bytes of the payload)
 2) Then we utilize a jump table, to pick the right SBE template parser.
 3) we use SBE parsing based on the template for the unique use case, and now we have the [variables] or data ready to use.
 
-Generally the data we recieve from exchanges is _Big Endian_
-
+Generally the data we recieve from exchanges is Big Endian.
