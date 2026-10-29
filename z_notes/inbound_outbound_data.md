@@ -1,10 +1,18 @@
-Phase 1) Parsing market data as per SBE, and construct the minimal things we need from it. 
+Phase 1) **Inbound Data** Parsing market data as per SBE, and construct the minimal things we need from it. 
 
 1. Define XML Schema `codec/schema`
 2. Define primitive typs structs `types/` for type safety
 3. Create Encocder + Decoder for one message type (Add Order) to get it in memory. `codec/`
 4. Write tests to check encode -> decode -> compare path. `tests/codec`
 5. Repeat for all message types.
+
+1. Read message header, and route to the correct meta-parser (based on type of order)
+2. Map Memory Structure "struct" to the raw buffer. Because of offsets, we can easily and quickly access each var. `types/`
+3. Create/Cast a pointer to the beginning of the payload buffer `codec/itch`
+4. Byte-Swap (we recieve in Big-Endian, but internally we will use little endian the entire time for our data).
+5. Create test with incoming payload > print output.
+6. Repeat for all types of incoming messages.
+
 
 This is the format that we will recieve data in (but SBE of course)
 ```
@@ -51,7 +59,7 @@ Now when trades are matched, we get "E" orders to know what order we need to del
 the aggressor (if there is one!) comes in as a separate "A" add order
 
 Parsing SBE:
-1) We read message header (first 8 bytes of the payload)
+1) We read message header (first 6 bytes of the payload)
 2) Then we utilize a jump table, to pick the right SBE template parser.
 3) we use SBE parsing based on the template for the unique use case, and now we have the [variables] or data ready to use.
 
