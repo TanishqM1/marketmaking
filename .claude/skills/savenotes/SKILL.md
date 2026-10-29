@@ -1,82 +1,92 @@
 ---
 name: savenotes
-description: Save answers from this conversation into the topic-organized FAQ in z_notes/. Use when the user runs /savenotes, or asks to write up / save / record what was just explained.
+description: Answer one question and save it to the topic FAQ in z_notes/. Use when the user runs /savenotes with a question they want recorded as they work.
 ---
 
 # savenotes
 
-Take explanations from **this conversation** and write them into `z_notes/` as simple FAQ
-entries. The user skims these later to re-learn the material, so clarity beats completeness of
-phrasing — but **no information may be dropped.**
+`/savenotes <question>` — **one question, one entry.**
 
-`ARGUMENTS` names what to save (e.g. "the buffer and recvfrom stuff", "everything about
-alignment"). If it's vague, cover everything substantive since the last `/savenotes` or the last
-topic shift.
+Two things happen, in this order:
 
-## Hard rules
+1. **Answer the question in chat**, normally. Same depth and quality as any other answer. The
+   user is learning right now; this is the teaching moment, not a filing operation.
+2. **Append one entry** for it to the right `z_notes/` topic file.
 
-1. **Only from this conversation.** Never invent an entry or pad with material that wasn't
-   discussed. If something was discussed but you're unsure it's correct, write it and append
-   `> ⚠️ verify this`.
-2. **Simple language.** Short sentences. Plain words. Write for someone who has forgotten the
-   context entirely and is skimming. No throat-clearing, no "it's important to note that".
-3. **Lose no information.** Simple ≠ lossy. If an explanation had a gotcha, a number, a
-   byte count, or a reason-why, it goes in. Compress the prose, never the content.
-4. **Never explain at a higher level than the original.** If the conversation covered *why*
-   something is true, the entry says why. A definition with the reasoning stripped out is a
-   failed entry.
+That's it. Do not sweep the conversation for other topics. Do not write entries the user didn't
+ask for. One invocation, one entry.
+
+If `ARGUMENTS` is empty, ask what to write up. Don't guess.
+
+## Scope discipline
+
+The notes are the user's, built incrementally as they hit things they don't understand. A file
+full of material they never asked for is worse than no file — they can't tell what they've
+actually learned from what was dumped on them.
+
+- One entry per invocation. If the question genuinely has two separable halves, write two
+  entries, and say so.
+- Keep entries **short**. A screen or less. If it needs more, the question was too broad — answer
+  fully in chat and write a tight entry covering the core.
+- Never reorganize, expand, or "improve" entries the user wrote themselves. Match the
+  surrounding file's style.
 
 ## Entry format
 
 ```markdown
-### Q: <the question, as the user would actually ask it>
+### Q: <the question, in the user's own words>
 
-<One or two sentences. The direct answer. No preamble.>
+<One or two sentences. The direct answer, no preamble.>
 
-<Optional: bullets for the details, a short table, or a code/byte diagram.>
+<Optional: bullets, a small table, or a byte/code diagram — only if the topic needs one.>
 
-**Example:** <concrete, specific, with real numbers where the topic has numbers>
+**Example:** <concrete, with real numbers if the topic has numbers>
 
-**Gotcha:** <only if there is one — the thing that bites people>
+**Gotcha:** <only if there is one — the thing that actually bites>
 ```
 
-- Phrase the Q the way the user asks things, not like a textbook heading.
-  Good: `Q: what is a buffer and why do we need one?`
-  Bad: `Q: On the Nature of Receive Buffers`
-- Include `**Example:**` whenever the topic has anything concrete attached — byte offsets,
-  numbers, a code line. Skip it for purely conceptual entries rather than inventing one.
-- Cross-link related entries with a plain line: `See also: [cpp.md](cpp.md) — struct padding`.
+Rules:
 
-## Where entries go
+- **Use the user's phrasing for the Q.** They'll recognize their own question when skimming.
+- **Simple language.** Short sentences, plain words. Write for someone who has forgotten the
+  context entirely.
+- **Simple ≠ lossy.** Keep the numbers, byte counts, and the *reason why*. An entry with the
+  reasoning stripped out is a failed entry — the "why" is the part worth re-reading.
+- **Only what was discussed.** Never invent. If something is uncertain, write it with
+  `> ⚠️ verify this`.
+- Cross-link when relevant: `See also: [cpp.md](cpp.md) — struct padding`.
 
-Route by **topic**, not by when it was discussed. One file per topic:
+## Where the entry goes
+
+Route by topic:
 
 | File | Covers |
 |---|---|
-| `z_notes/cpp.md` | the C++ language itself — types, structs, alignment, `static`, templates, operators, stdlib |
-| `z_notes/opsys_machine_arch.md` | OS and hardware — syscalls, kernel vs userspace, memory, cache, registers, CPU behaviour, networking stack |
-| `z_notes/inbound_outbound_data.md` | wire formats and parsing — ITCH, SBE, offsets, byte order, framing, the parse loop |
-| `z_notes/market_structure.md` | how markets work — order books, matching, message semantics, market data vs order entry |
-| `z_notes/build_toolchain.md` | compiling, linking, CMake, flags, sanitizers, debugging tools |
-| `z_notes/bad_habits.md` | things not to do in this codebase. **Rules list, not FAQ format** — leave its style alone. |
+| `z_notes/cpp.md` | the C++ language — types, structs, alignment, keywords, stdlib |
+| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, memory, cache, registers, network stack |
+| `z_notes/inbound_outbound_data.md` | wire formats — ITCH, SBE, offsets, byte order, framing, parse loop |
+| `z_notes/market_structure.md` | how markets work — books, matching, message semantics |
+| `z_notes/build_toolchain.md` | compiling, linking, CMake, flags, sanitizers |
+| `z_notes/bad_habits.md` | things not to do here. **Rules list, not FAQ — leave its style alone.** |
 
-Create a topic file if a genuinely new topic comes up. Don't force an entry into a bad fit, and
-don't create a file for a single entry that belongs in an existing one.
+Create the file if it doesn't exist yet, with just the topic name as an `# H1` and the entry
+under it. Don't pre-create files for topics with no entries.
 
-Append new entries to the end of the right file's FAQ section. **Check for an existing entry on
-the same question first** — if there is one, improve it in place rather than adding a duplicate.
+`inbound_outbound_data.md` already holds the user's own reference notes. Append FAQ entries below
+a `# FAQ` divider at the end, leaving their material untouched.
 
-## Also prune `z_questions/`
+Check whether an entry for the same question already exists. If so, improve it in place instead
+of duplicating.
 
-`z_questions/` holds the user's *open* questions. When you write an entry that answers one of
-them, **delete that question from `z_questions/`** — it's answered now, it lives in the notes.
+## Then prune `z_questions/`
 
-Leave anything still unanswered. Don't delete a question because it was partially addressed; if
-the entry only covers half of it, narrow the question in place to the part that's still open.
+If the question matches one of the user's open questions in `z_questions/`, **delete it from
+there** — it's answered now.
 
-## After writing
+If the entry only covers part of it, narrow the question in place to whatever is still open
+rather than deleting the whole line.
 
-Report, briefly:
-- which files you wrote to and how many entries each
-- which `z_questions/` entries you removed
-- anything discussed that you deliberately did **not** save, and why
+## Report
+
+One or two lines: which file you appended to, and which `z_questions/` line you removed (if any).
+Don't summarize the entry — they just read the answer.
