@@ -112,9 +112,47 @@ against the resting order, then an A for whatever's left over.
 So if best bid >= best ask, that's our bug or a dropped packet. Never real.
 
 
-Parse loop is: read byte 0, switch to the right decoder, memcpy + byteswap from the known
-offsets, advance by that type's length, repeat. Lengths are A=36 E=31 C=36 X=23 D=19 U=35, fixed
-per type, so we don't need a length prefix to parse.
+One datagram = many messages packed back to back, no padding. The venue batches them (~42 bytes
+of eth/ip/udp overhead per packet, and syscalls are the dominant cost in a receive loop) so we
+get ~1400 bytes and decode ~40 messages per recvfrom.
+
+```
+offset:   0        36       67       90      109      144
+         'A'      'E'      'X'      'D'      'U'
+          |--36----|--31----|--23----|--19----|--35----|
+len = 144
+```
+
+Each message is self-identifying, type is at buf[offset] not just buf[0]. Nothing tells us how
+many are in there, we discover it by walking.
+
+Parse loop: read buf[offset], switch to the right decoder, memcpy + byteswap from the known
+offsets, advance by that type's length, repeat. Lengths A=36 E=31 C=36 X=23 D=19 U=35, fixed per
+type, so no length prefix needed to parse.
+
+Two different numbers, don't mix them up:
+```
+len - offset        bytes left in the buffer   -> bounds check, does this msg fit
+length_for(type)    this message's size        -> how far to advance
+```
+
+Bounds check before every decode: `remaining = len - offset; if (msglen > remaining) bail`.
+Written that way rather than `offset + msglen > len` it can't overflow. Skip it and a truncated
+datagram memcpy's past the end of the buffer = heap overread + UB.
+
+Loop should end at `offset == len` exactly. `offset > len`, or leftover bytes smaller than one
+message, means truncation or a wrong length constant. Worth asserting, because a bad constant
+lands us mid-message, we read a random byte as a type, and everything after it decodes to
+garbage. One wrong number desyncs the whole rest of the datagram.
+
+Buffer itself: one fixed 64KB array, allocated at startup, overwritten every read. UDP is
+message-oriented so one recvfrom = exactly one complete datagram, never a partial, so no ring
+buffer and no accumulation logic. Undersizing it silently truncates (MSG_TRUNC detects it), and
+64KB costs nothing, so just use the max. Anything pointing into the buffer dies on the next
+recvfrom, so decode fully, apply to the book, then read again.
+
+(TCP is a byte stream with no message boundaries, so the order entry side will need
+accumulation. Different problem, later.)
 
 
 Folders:
