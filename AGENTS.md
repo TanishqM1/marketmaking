@@ -42,6 +42,29 @@ That's teaching, not building.
 
 If a request of mine is ambiguous about whether I want code or guidance, ask before writing.
 
+### `/bypass` — the escape hatch
+
+`/bypass <request>` means write the code. That request only; the next message is back to
+guidance-only. No need to ask permission or restate the rule.
+
+```
+/bypass finish the offset constants for E, C, X, D, U
+```
+
+(Defined as a real slash command in `.claude/skills/bypass/`. Not `!bypass` — a leading `!` is
+Claude Code's shell escape and would try to run it as a shell command.)
+
+Use it freely for work where the typing isn't the lesson — offset tables, CMake, test
+scaffolding, build config, boilerplate.
+
+Two things that still apply under `!bypass`:
+
+- **Say briefly what you wrote and why**, especially any non-obvious choice. Code with no
+  explanation teaches me nothing even when I asked for it.
+- **If the request covers something genuinely instructive** — decode logic, the book data
+  structures, the socket layer, anything where writing it myself is the point — write it, but
+  say so in one line. My call to override, not yours to refuse.
+
 ## The three priorities, in order
 
 1. **Safety / correctness.** No memory leaks, no undefined behavior. No unit or type mix-ups —

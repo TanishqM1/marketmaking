@@ -1,66 +1,130 @@
-Phase 1) **Inbound Data** Parsing market data as per SBE, and construct the minimal things we need from it. 
+Inbound market data = ITCH. Outbound orders = SBE. Real venues are asymmetric like this
+(Nasdaq is ITCH in, OUCH out).
 
-1. Define XML Schema `codec/schema`
-2. Define primitive typs structs `types/` for type safety
-3. Create Encocder + Decoder for one message type (Add Order) to get it in memory. `codec/`
-4. Write tests to check encode -> decode -> compare path. `tests/codec`
-5. Repeat for all message types.
-
-1. Read message header, and route to the correct meta-parser (based on type of order)
-2. Map Memory Structure "struct" to the raw buffer. Because of offsets, we can easily and quickly access each var. `types/`
-3. Create/Cast a pointer to the beginning of the payload buffer `codec/itch`
-4. Byte-Swap (we recieve in Big-Endian, but internally we will use little endian the entire time for our data).
-5. Create test with incoming payload > print output.
-6. Repeat for all types of incoming messages.
+ITCH is big-endian, packed with no padding, message type is byte 0, and lengths are fixed per
+type. SBE is little-endian, type is the templateId in the header, length is in the header.
 
 
-This is the format that we will recieve data in (but SBE of course)
+Phase 1)
+1. primitive types `types/` (Price, Qty, OrderRef, Side, Timestamp)
+2. offset constants `codec/itch.hpp`
+3. encoder + decoder for Add Order `codec/itch.cpp`
+4. round trip test, encode -> decode -> compare `test/codec/`
+5. repeat for the other 5
+6. dispatch loop, read byte 0 -> switch -> decoder
+
+We need an encoder even though ITCH is inbound, because the mock exchange has to publish data,
+and it's how we make test fixtures.
+
+Not doing yet: MoldUDP64, sockets, any SBE.
+
+
+Don't cast a struct onto the buffer. ITCH is packed and big-endian so no struct matches the
+wire, and casting is misaligned + UB. Use constexpr offsets, memcpy into a local, then byteswap.
+A fixed size memcpy is one load so it's the same speed. Offsets go in codec/ not types/, since
+they're wire knowledge.
+
+
+These are the messages. Every one starts with the same 11 bytes:
+
 ```
-Add Order. If the type is "F", there will *also* be a 4-byte MPID. We do not need to worry about this, and will assume we always parse it as an "A". (regardless, we can check the len())
-{
-  "message_type": "A",
-  "timestamp": 34200000000000, 
-  "order_reference_number": 1029485761,
-  "buy_sell_indicator": "B",
-  "shares": 500,
-  "stock": "AAPL",
-  "price": 175.2500
-}
-
-Order Executed. if the type is "C", that means it occured at a bette price than the original order limit.
-{
-  "message_type": "E",
-  "timestamp": 34200105000000,
-  "order_reference_number": 1029485761,
-  "executed_shares": 200,
-  "match_number": 58294
-}
-
-Order Cancel (X), Order Modify (U), Order Delete (D)
-{
-  "message_type": "X",
-  "timestamp": 34200250000000,
-  "order_reference_number": 1029485761,
-  "canceled_shares": 300
-}
+0   msg type        1 (char)
+1   stock locate    2       <- symbol id
+3   tracking num    2
+5   timestamp       6       <- ns since midnight
 ```
 
+The actual "AAPL" string only shows up on Add Order. Everything else references the order ref.
 
-Market Data books do not need to:
-    pair aggressors with resting orders, or generate fills (data to notify the orderee)
-    enforce or track time priority / queue position
-    maintain per-order queues with price levels
-    care about MPID / optional market maker identifiers
+```
+A - Add Order (36 bytes)
+11  order_ref       8
+19  buy_sell        1 (B/S)
+20  shares          4
+24  stock           8 (char)
+32  price           4       <- 4 implied decimals, 175.2500 = 1752500
 
-The market does a great job of helping us hadle our local data state.
-    # of shares at each price (bids descending)
-    # of shares at each price (asks aschending)
-Now when trades are matched, we get "E" orders to know what order we need to delete (the non-aggresor), and the remaining qty from 
-the aggressor (if there is one!) comes in as a separate "A" add order
+E - Order Executed (31 bytes)
+11  order_ref       8
+19  executed_shares 4
+23  match_number    8
+        no price field. the trade was at the resting order's price, which we already have.
 
-Parsing SBE:
-1) We read message header (first 6 bytes of the payload)
-2) Then we utilize a jump table, to pick the right SBE template parser.
-3) we use SBE parsing based on the template for the unique use case, and now we have the [variables] or data ready to use.
+C - Order Executed With Price (36 bytes)
+11  order_ref       8
+19  executed_shares 4
+23  match_number    8
+31  printable       1
+32  execution_price 4
+        execution_price is just trade reporting. still decrement the level from our map.
 
-Generally the data we recieve from exchanges is Big Endian.
+X - Order Cancel (23 bytes)
+11  order_ref       8
+19  cancelled_shares 4
+
+D - Order Delete (19 bytes)
+11  order_ref       8
+        no qty field at all, which is why we need the order map.
+
+U - Order Replace (35 bytes)
+11  original order_ref  8
+19  new order_ref       8
+27  shares              4
+31  price               4
+        its own message, not a version of X or D. it's a delete + add, and all future
+        messages use the new ref.
+```
+
+F is Add Order + a 4 byte MPID at offset 36 (40 total). Skipping it, we don't care about MPID.
+
+Verify all these offsets against the Nasdaq TotalView-ITCH 5.0 spec before coding.
+
+
+Two annoying parts:
+- byteswap every multi-byte field on read (std::byteswap in <bit>, or __builtin_bswap64). Swap
+  once at decode, then everything internal is little-endian.
+- the 6 byte timestamp. There's no 6 byte int, and reading 8 bytes overruns the message. memcpy
+  6 bytes into a zeroed uint64 then swap. Get this one working by itself first.
+
+
+What our book actually needs: shares at each price, bids descending and asks ascending. No
+fills, no time priority, no per-order queues, no MPID.
+
+But ITCH is order-based, so price levels don't exist on the wire, we build them. E C X D U only
+give us an order ref (no price/side/symbol), so state/ needs order_ref -> {side, price,
+remaining}. Every message except A starts by looking in it. We don't match orders, but we do
+track every live one.
+
+```
+A       insert ref, level[price] += shares
+E/C     level[price] -= executed, decrement remaining, erase if 0
+X       level[price] -= cancelled, decrement remaining, erase if 0
+D       level[price] -= ref.remaining, erase ref
+U       subtract old remaining from old level, erase, insert new ref at new price
+```
+
+Partial fills are normal so decrement, don't delete.
+
+The book never crosses. The exchange matches internally and just tells us what already happened.
+An order that executes instantly never gets an A because it never rested, we just see the E
+against the resting order, then an A for whatever's left over.
+
+So if best bid >= best ask, that's our bug or a dropped packet. Never real.
+
+
+Parse loop is: read byte 0, switch to the right decoder, memcpy + byteswap from the known
+offsets, advance by that type's length, repeat. Lengths are A=36 E=31 C=36 X=23 D=19 U=35, fixed
+per type, so we don't need a length prefix to parse.
+
+
+Folders:
+    types/          Price, Qty, OrderRef, Side. no wire knowledge, compiles on its own
+    codec/itch.*    offsets, encoder, decoder. all the wire knowledge
+    codec/schema/   SBE schema, later
+    state/          order map + price levels, the actual market state
+    transport/      sockets, MoldUDP64, later
+    session/        seq numbers, gap detection, later
+    test/codec/     round trip tests
+
+types/ is just the vocabulary, state/ is the actual book, codec/ is anything that parses or
+serializes.
