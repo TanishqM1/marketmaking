@@ -1,9 +1,13 @@
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 
 #include "itch.hpp"
+
+namespace itch
+{
 
 // helper functions to read 2, 4 and 8 bytes from our packet stream
 // we need to memcpy (to read) and byteswap (for little endianness).
@@ -60,8 +64,10 @@ void decode_packet(std::span<const std::byte> packet)
         // PARSE HEADER
 
         // read message type (dont need memcpy, can directly read!)
-        auto          type = static_cast<MsgType>(packet.data()[offset + MessageHeader::msg_type]);
-        std::uint16_t stock_locate = read_be16(packet.data(), offset + MessageHeader::stock_locate);
-        // tracking # and timestamp dont matter
+        auto type =
+            static_cast<itch::MsgType>(packet.data()[offset + itch::MessageHeader::msg_type]);
+        std::uint16_t stock_locate =
+            read_be16(packet.data(), offset + itch::MessageHeader::stock_locate);
     }
-};
+}
+}; // namespace itch
