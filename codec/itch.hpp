@@ -1,26 +1,39 @@
 #pragma once
 
+#include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 
 // Common 11-byte prefix on every ITCH message. All per-message bodies start at 11.
 struct MessageHeader
 {
-    static constexpr int msg_type = 0; // byte 0
+    static constexpr int msg_type     = 0; // byte 0
     static constexpr int stock_locate = 1; // byte 1/2
     static constexpr int tracking_num = 3; // byte 3/4
-    static constexpr int timestamp = 5; // byte 5-10, 6 bytes, ns since midnight
+    static constexpr int timestamp    = 5; // byte 5-10, 6 bytes, ns since midnight
 
     static constexpr int size = 11; // where every body begins
+};
+
+enum class MsgType : char
+{
+    AddOrder               = 'A',
+    OrderExecuted          = 'E',
+    OrderExecutedWithPrice = 'C',
+    OrderCancel            = 'X',
+    OrderDelete            = 'D',
+    OrderReplace           = 'U',
 };
 
 // (A) Add Order
 struct AddOrder
 {
     static constexpr int order_ref = 11; // 8 bytes
-    static constexpr int side = 19; // 1 byte char
-    static constexpr int shares = 20; // 4 byte amount
-    static constexpr int stock = 24; // 8 byte chars
-    static constexpr int price = 32; // 4 int, with 4 decimals (amt/10000)
+    static constexpr int side      = 19; // 1 byte char
+    static constexpr int shares    = 20; // 4 byte amount
+    static constexpr int stock     = 24; // 8 byte chars
+    static constexpr int price     = 32; // 4 int, with 4 decimals (amt/10000)
 
     static constexpr int length = 36;
 };
@@ -29,9 +42,9 @@ struct AddOrder
 // order's price, which we already hold in the order map.
 struct OrderExecuted
 {
-    static constexpr int order_ref = 11; // 8 bytes
+    static constexpr int order_ref       = 11; // 8 bytes
     static constexpr int executed_shares = 19; // 4 bytes
-    static constexpr int match_number = 23; // 8 bytes
+    static constexpr int match_number    = 23; // 8 bytes
 
     static constexpr int length = 31;
 };
@@ -40,10 +53,10 @@ struct OrderExecuted
 // the book level to decrement still comes from the order map.
 struct OrderExecutedWithPrice
 {
-    static constexpr int order_ref = 11; // 8 bytes
+    static constexpr int order_ref       = 11; // 8 bytes
     static constexpr int executed_shares = 19; // 4 bytes
-    static constexpr int match_number = 23; // 8 bytes
-    static constexpr int printable = 31; // 1 byte char, 'Y'/'N'
+    static constexpr int match_number    = 23; // 8 bytes
+    static constexpr int printable       = 31; // 1 byte char, 'Y'/'N'
     static constexpr int execution_price = 32; // 4 int, 4 implied decimals
 
     static constexpr int length = 36;
@@ -52,7 +65,7 @@ struct OrderExecutedWithPrice
 // (X) Order Cancel. Partial -- cancelled_shares is how much to remove.
 struct OrderCancel
 {
-    static constexpr int order_ref = 11; // 8 bytes
+    static constexpr int order_ref        = 11; // 8 bytes
     static constexpr int cancelled_shares = 19; // 4 bytes
 
     static constexpr int length = 23;
@@ -73,10 +86,15 @@ struct OrderDelete
 struct OrderReplace
 {
     static constexpr int original_order_ref = 11; // 8 bytes
-    static constexpr int new_order_ref = 19; // 8 bytes
-    static constexpr int shares = 27; // 4 bytes
-    static constexpr int price = 31; // 4 int, 4 implied decimals
+    static constexpr int new_order_ref      = 19; // 8 bytes
+    static constexpr int shares             = 27; // 4 bytes
+    static constexpr int price              = 31; // 4 int, 4 implied decimals
 
     static constexpr int length = 35;
 };
 
+void decode_packet(std::span<const std::byte> packet);
+
+uint16_t read_be16(const std::byte* packet, std::size_t offset);
+uint32_t read_be32(const std::byte* packet, std::size_t offset);
+uint64_t read_be64(const std::byte* packet, std::size_t offset);
