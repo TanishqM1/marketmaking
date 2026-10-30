@@ -3,34 +3,67 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
 
 #include "itch.hpp"
 
-namespace itch
+namespace mm::itch
 {
 
 // helper functions to read 2, 4 and 8 bytes from our packet stream
 // we need to memcpy (to read) and byteswap (for little endianness).
-uint16_t read_be16(const std::byte* packet, std::size_t offset)
+std::uint16_t read_be16(const std::byte* packet, std::size_t offset)
 {
-    uint16_t temp;
+    std::uint16_t temp;
     std::memcpy(&temp, &packet[offset], sizeof(temp));
     return std::byteswap(temp);
 }
 
-uint32_t read_be32(const std::byte* packet, std::size_t offset)
+std::uint32_t read_be32(const std::byte* packet, std::size_t offset)
 {
-    uint32_t temp;
+    std::uint32_t temp;
     std::memcpy(&temp, &packet[offset], sizeof(temp));
     return std::byteswap(temp);
 }
 
-uint64_t read_be64(const std::byte* packet, std::size_t offset)
+std::uint64_t read_be64(const std::byte* packet, std::size_t offset)
 {
-    uint64_t temp;
+    std::uint64_t temp;
     std::memcpy(&temp, &packet[offset], sizeof(temp));
     return std::byteswap(temp);
 }
+
+namespace
+{
+// here we need functions to read each type of order, starting from a byte, then return the type.
+// addorder
+AddOrderFields decode_add_order(const std::byte* packet)
+{
+    // need to read 5 params, and we are given the address of the MESSAGE start.
+    std::uint64_t order_ref = read_be64(packet, AddOrder::order_ref);
+    mm::Side      side;
+    auto          temp_side = static_cast<char>(packet[AddOrder::side]);
+    switch (temp_side)
+    {
+        // here we are checking, the byte that we read, does it represent "66" or "83" ? (B/S)
+        case 'B':
+            side = mm::Side::Buy;
+            break;
+        case 'S':
+            side = mm::Side::Sell;
+            break;
+        default:
+            // TODO: error path, make cold path
+            break;
+    }
+    std::uint32_t shares = read_be32(packet, AddOrder::shares);
+    std::uint32_t price  = read_be32(packet, AddOrder::price);
+    // whats the best way to return these?
+    AddOrderFields decoded_add_order{order_ref, side, shares, price};
+    return decoded_add_order;
+}
+
+} // namespace
 
 // "span" is a view over a contigous seuqence of objects it holds a pointer to the start of some
 // data, and a size. in our case, this is the start of the buffer, and the len of the packet.
@@ -59,15 +92,34 @@ void decode_packet(std::span<const std::byte> packet)
 
     std::size_t offset = 0;
 
+    // / TODO: decide if the decode_type funtions are being inlined, otherwise
+    // force them to be inlined.
+
     while (offset < packet.size())
     {
         // PARSE HEADER
 
+        // TODO add and parse timestamp here.
+
         // read message type (dont need memcpy, can directly read!)
-        auto type =
-            static_cast<itch::MsgType>(packet.data()[offset + itch::MessageHeader::msg_type]);
-        std::uint16_t stock_locate =
-            read_be16(packet.data(), offset + itch::MessageHeader::stock_locate);
+        auto type = static_cast<itch::MsgType>(packet.data()[offset + MessageHeader::msg_type]);
+        std::uint16_t stock_locate = read_be16(packet.data(), offset + MessageHeader::stock_locate);
+        // we can disregard tracking num & timestamp, it doesnt matter.
+        // jump table with case : type, then parse the rest of the type.
+        switch (type)
+        {
+            case MsgType::AddOrder:
+            {
+                AddOrderFields addorderfields = decode_add_order(packet.data() + offset);
+                // logic to submit into market making book
+                break;
+            }
+
+            default:
+                // TODO: write error path, make cold path
+                break;
+        }
+        // TODO: increment offset, do packet.subspan, add bounds check
     }
 }
-}; // namespace itch
+}; // namespace mm::itch

@@ -1,12 +1,13 @@
 #pragma once
 
+#include "types/types.hpp"
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
 // Common 11-byte prefix on every ITCH message. All per-message bodies start at 11.
-namespace itch
+namespace mm::itch
 {
 
 struct MessageHeader
@@ -36,14 +37,23 @@ struct AddOrder
     static constexpr std::size_t side      = 19; // 1 byte char
     static constexpr std::size_t shares    = 20; // 4 byte amount
     static constexpr std::size_t stock     = 24; // 8 byte chars
-    static constexpr std::size_t price     = 32; // 4 std::size_t, with 4 decimals (amt/10000)
+    static constexpr std::size_t price     = 32; // 4 byte int, with 4 decimals (amt/10000)
 
     static constexpr std::size_t length = 36;
+};
+
+struct AddOrderFields
+{
+    std::uint64_t order_ref;
+    Side          side;
+    std::uint32_t shares;
+    std::uint32_t price;
 };
 
 // (E) Order Executed. No price field -- the trade happened at the resting
 // order's price, which we already hold in the order map.
 struct OrderExecuted
+
 {
     static constexpr std::size_t order_ref       = 11; // 8 bytes
     static constexpr std::size_t executed_shares = 19; // 4 bytes
@@ -60,7 +70,7 @@ struct OrderExecutedWithPrice
     static constexpr std::size_t executed_shares = 19; // 4 bytes
     static constexpr std::size_t match_number    = 23; // 8 bytes
     static constexpr std::size_t printable       = 31; // 1 byte char, 'Y'/'N'
-    static constexpr std::size_t execution_price = 32; // 4 std::size_t, 4 implied decimals
+    static constexpr std::size_t execution_price = 32; // 4 byte int, 4 implied decimals
 
     static constexpr std::size_t length = 36;
 };
@@ -91,14 +101,14 @@ struct OrderReplace
     static constexpr std::size_t original_order_ref = 11; // 8 bytes
     static constexpr std::size_t new_order_ref      = 19; // 8 bytes
     static constexpr std::size_t shares             = 27; // 4 bytes
-    static constexpr std::size_t price              = 31; // 4 std::size_t, 4 implied decimals
+    static constexpr std::size_t price              = 31; // 4 byte int, 4 implied decimals
 
     static constexpr std::size_t length = 35;
 };
 
 void decode_packet(std::span<const std::byte> packet);
 
-uint16_t read_be16(const std::byte* packet, std::size_t offset);
-uint32_t read_be32(const std::byte* packet, std::size_t offset);
-uint64_t read_be64(const std::byte* packet, std::size_t offset);
-} // namespace itch
+std::uint16_t read_be16(const std::byte* packet, std::size_t offset);
+std::uint32_t read_be32(const std::byte* packet, std::size_t offset);
+std::uint64_t read_be64(const std::byte* packet, std::size_t offset);
+} // namespace mm::itch
