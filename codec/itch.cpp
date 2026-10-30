@@ -110,8 +110,19 @@ void decode_packet(std::span<const std::byte> packet)
         {
             case MsgType::AddOrder:
             {
+                // does this whole message fit in what's left? MUST come before
+                // decode_add_order touches any bytes. written as `remaining < length`
+                // rather than `offset + length > size` so it cannot overflow.
+                // the subtraction is safe: the loop condition guarantees offset < size.
+                if (AddOrder::length > packet.size() - offset)
+                {
+                    return; // truncated message. TODO: count it, cold path
+                }
+
                 AddOrderFields addorderfields = decode_add_order(packet.data() + offset);
                 // logic to submit into market making book
+
+                offset += AddOrder::length; // advance to the next message
                 break;
             }
 
