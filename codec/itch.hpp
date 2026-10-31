@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 
 // Common 11-byte prefix on every ITCH message. All per-message bodies start at 11.
@@ -44,6 +45,7 @@ struct MessageHeader
 enum class MsgType : char
 {
     AddOrder               = 'A',
+    AddOrderWithMPID       = 'F',
     OrderExecuted          = 'E',
     OrderExecutedWithPrice = 'C',
     OrderCancel            = 'X',
@@ -61,6 +63,16 @@ struct AddOrder
     static constexpr std::size_t price     = 32; // 4 byte int, with 4 decimals (amt/10000)
 
     static constexpr std::size_t length = 36;
+};
+
+// (F) Add Order with MPID. Identical layout to (A) plus a 4-byte MPID at offset 36,
+// so AddOrder's field offsets all apply. MPID is market-maker identity -- we don't care.
+// ONLY the length differs. Same as the (E)/(C) pair: reuse the decoder, never the length.
+struct AddOrderWithMPID
+{
+    static constexpr std::size_t mpid = 36; // 4 byte chars, unused
+
+    static constexpr std::size_t length = 40;
 };
 
 struct AddOrderFields
