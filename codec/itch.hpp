@@ -178,6 +178,18 @@ struct OrderReplaceFields
 
 void decode_packet(std::span<const std::byte> packet);
 
+// Per-message decoders. `detail` means "do not call directly" -- these assume the message
+// already fits, because decode_packet bounds-checks before dispatching. Exposed only so
+// tests can feed them hand-written bytes and assert the decoded fields.
+namespace detail
+{
+AddOrderFields      decode_add_order(const std::byte* packet);
+OrderExecutedFields decode_executed_order(const std::byte* packet);
+OrderCancelFields   decode_cancel_order(const std::byte* packet);
+OrderDeleteFields   decode_delete_order(const std::byte* packet);
+OrderReplaceFields  decode_replace_order(const std::byte* packet);
+} // namespace detail
+
 // TODO: DELETE these three. They are redundant -- the inline definitions at the top of
 // this file already declare them. Keeping both invites changing one signature and not
 // the other.

@@ -93,15 +93,75 @@ void test_read_be()
     CHECK_EQ(mm::itch::read_be64(buf, 6), 1029485761u);
 }
 
+// (A) Add Order, 36 bytes, hand-built. This is the test that actually verifies the
+// OFFSETS -- a round-trip against our own encoder would pass even with wrong offsets,
+// since both sides read the same constants.
+void test_decode_add_order()
+{
+    std::byte msg[mm::itch::AddOrder::length]{};
+
+    msg[0] = std::byte{'A'};                               // msg type
+    msg[1] = std::byte{0x00}; msg[2] = std::byte{0x2A};    // stock_locate = 42
+    // bytes 3-4 tracking, 5-10 timestamp: left zero, we don't read them
+
+    // order_ref = 1029485761 at offset 11 (8 bytes, big-endian)
+    msg[11] = std::byte{0x00}; msg[12] = std::byte{0x00};
+    msg[13] = std::byte{0x00}; msg[14] = std::byte{0x00};
+    msg[15] = std::byte{0x3D}; msg[16] = std::byte{0x5C};
+    msg[17] = std::byte{0xB4}; msg[18] = std::byte{0xC1};
+
+    msg[19] = std::byte{'B'};                              // side
+
+    // shares = 500 at offset 20 (4 bytes)
+    msg[20] = std::byte{0x00}; msg[21] = std::byte{0x00};
+    msg[22] = std::byte{0x01}; msg[23] = std::byte{0xF4};
+
+    // stock = "AAPL    " at offset 24 (8 bytes) -- not read, but set it anyway
+    msg[24] = std::byte{'A'}; msg[25] = std::byte{'A'};
+    msg[26] = std::byte{'P'}; msg[27] = std::byte{'L'};
+    msg[28] = std::byte{' '}; msg[29] = std::byte{' '};
+    msg[30] = std::byte{' '}; msg[31] = std::byte{' '};
+
+    // price = 175.2500 -> 1752500 at offset 32 (4 bytes, 4 implied decimals)
+    msg[32] = std::byte{0x00}; msg[33] = std::byte{0x1A};
+    msg[34] = std::byte{0xBD}; msg[35] = std::byte{0xB4};
+
+    const auto f = mm::itch::detail::decode_add_order(msg);
+
+    CHECK_EQ(f.order_ref, 1029485761u);
+    CHECK_EQ(f.shares, 500u);
+    CHECK_EQ(f.price, 1752500u); // integer, 4 implied decimals. never a float.
+    CHECK(f.side == mm::Side::Buy);
+}
+
+// (D) Order Delete, 19 bytes. One field -- which is the point: the quantity to
+// remove is NOT on the wire, it comes from the order map.
+void test_decode_delete_order()
+{
+    std::byte msg[mm::itch::OrderDelete::length]{};
+
+    msg[0] = std::byte{'D'};
+    msg[11] = std::byte{0x00}; msg[12] = std::byte{0x00};
+    msg[13] = std::byte{0x00}; msg[14] = std::byte{0x00};
+    msg[15] = std::byte{0x3D}; msg[16] = std::byte{0x5C};
+    msg[17] = std::byte{0xB4}; msg[18] = std::byte{0xC1};
+
+    const auto f = mm::itch::detail::decode_delete_order(msg);
+    CHECK_EQ(f.order_ref, 1029485761u);
+}
+
 } // namespace
 
 int main()
 {
     test_read_be();
+    test_decode_add_order();
+    test_decode_delete_order();
 
-    // TODO: decode assertions per message type. Needs the decoders reachable --
-    // they're in an anonymous namespace in itch.cpp right now, so only
-    // decode_packet is linkable. See the note in the handoff.
+    // TODO: the same for (E), (X), (U). (U) matters most -- two adjacent uint64 order
+    // refs at offsets 11 and 19, so a transposition is silent and would corrupt the map.
+    // TODO: transcribe the expected bytes from the official Nasdaq TotalView-ITCH 5.0
+    // spec rather than from our own offset constants, or these only prove self-consistency.
 
     if (failures == 0)
     {

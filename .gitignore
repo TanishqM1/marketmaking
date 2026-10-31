@@ -1,0 +1,26 @@
+# build output -- never committed. `build*/` covers build/, build-release/, etc.
+build*/
+cmake-build-*/
+
+# compile_commands.json lives in the build dir, but catch stray copies/symlinks
+compile_commands.json
+
+# clangd / editor caches
+.cache/
+.ccls-cache/
+
+# object files, libs, binaries
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# profiling + sanitizer output
+*.profraw
+*.profdata
+perf.data*
+callgrind.out.*
+
+# macOS
+.DS_Store
