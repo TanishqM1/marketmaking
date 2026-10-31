@@ -1,5 +1,0 @@
-# ninja log v7
-1	68	1793427858364184757	test/CMakeFiles/test_codec.dir/codec/test_itch.cpp.o	3739324ee2945bcc
-1	156	1793427858364003422	CMakeFiles/mm_codec.dir/codec/itch.cpp.o	470abb916f659568
-156	191	1793427858519667806	libmm_codec.a	1c2aa5c6641e1146
-191	222	1793427858553943014	test/test_codec	2722599ace7627dd
