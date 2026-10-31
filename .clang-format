@@ -1,0 +1,48 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+
+# --- layout ---
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Allman braces — matches how the structs in codec/ are already written
+BreakBeforeBraces: Allman
+
+# --- alignment ---
+# These matter for this project: itch.hpp is essentially a spec table, and
+# aligning the offset constants makes a wrong number visibly wrong.
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+
+# --- pointers ---
+# `const std::byte* p` — type-attached, since the pointer is part of the type
+PointerAlignment: Left
+ReferenceAlignment: Left
+QualifierAlignment: Left
+
+# --- includes ---
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+
+# --- misc ---
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+SpaceAfterCStyleCast: true
+SeparateDefinitionBlocks: Always
+EmptyLineBeforeAccessModifier: LogicalBlock
+FixNamespaceComments: true
+IndentCaseLabels: true
