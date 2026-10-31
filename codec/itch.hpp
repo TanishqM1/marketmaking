@@ -62,9 +62,16 @@ struct OrderExecuted
     static constexpr std::size_t length = 31;
 };
 
+struct OrderExecutedFields
+{
+    std::uint64_t order_ref;
+    std::uint32_t executed_shares;
+};
+
 // (C) Order Executed With Price. execution_price is trade-reporting info only;
 // the book level to decrement still comes from the order map.
 struct OrderExecutedWithPrice
+
 {
     static constexpr std::size_t order_ref       = 11; // 8 bytes
     static constexpr std::size_t executed_shares = 19; // 4 bytes
@@ -75,6 +82,20 @@ struct OrderExecutedWithPrice
     static constexpr std::size_t length = 36;
 };
 
+enum class Printable : std::uint8_t
+{
+    Yes,
+    No
+};
+
+struct OrderExecutedWithPriceFields
+{
+    std::uint64_t order_ref;
+    std::uint32_t executed_shares;
+    Printable     printable;
+    std::uint32_t execution_price;
+};
+
 // (X) Order Cancel. Partial -- cancelled_shares is how much to remove.
 struct OrderCancel
 {
@@ -82,6 +103,12 @@ struct OrderCancel
     static constexpr std::size_t cancelled_shares = 19; // 4 bytes
 
     static constexpr std::size_t length = 23;
+};
+
+struct OrderCancelFields
+{
+    std::uint64_t order_ref;
+    std::uint32_t cancelled_shares;
 };
 
 // (D) Order Delete. No quantity field: the amount to remove is the order's
@@ -97,6 +124,7 @@ struct OrderDelete
 // its old level, erase that ref, then insert new_order_ref at the new price.
 // All later messages use the new ref.
 struct OrderReplace
+
 {
     static constexpr std::size_t original_order_ref = 11; // 8 bytes
     static constexpr std::size_t new_order_ref      = 19; // 8 bytes
@@ -104,6 +132,14 @@ struct OrderReplace
     static constexpr std::size_t price              = 31; // 4 byte int, 4 implied decimals
 
     static constexpr std::size_t length = 35;
+};
+
+struct OrderReplaceFields
+{
+    std::uint64_t original_order_ref;
+    std::uint64_t new_order_ref;
+    std::uint32_t shares;
+    std::uint32_t price;
 };
 
 void decode_packet(std::span<const std::byte> packet);
