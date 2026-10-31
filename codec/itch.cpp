@@ -12,26 +12,6 @@ namespace mm::itch
 
 // helper functions to read 2, 4 and 8 bytes from our packet stream
 // we need to memcpy (to read) and byteswap (for little endianness).
-std::uint16_t read_be16(const std::byte* packet, std::size_t offset)
-{
-    std::uint16_t temp;
-    std::memcpy(&temp, &packet[offset], sizeof(temp));
-    return std::byteswap(temp);
-}
-
-std::uint32_t read_be32(const std::byte* packet, std::size_t offset)
-{
-    std::uint32_t temp;
-    std::memcpy(&temp, &packet[offset], sizeof(temp));
-    return std::byteswap(temp);
-}
-
-std::uint64_t read_be64(const std::byte* packet, std::size_t offset)
-{
-    std::uint64_t temp;
-    std::memcpy(&temp, &packet[offset], sizeof(temp));
-    return std::byteswap(temp);
-}
 
 namespace
 {
@@ -53,7 +33,7 @@ AddOrderFields decode_add_order(const std::byte* packet)
             side = mm::Side::Sell;
             break;
         default:
-            // TODO: error path, make cold path
+            // TODO followup on this
             break;
     }
     std::uint32_t shares = read_be32(packet, AddOrder::shares);
@@ -61,6 +41,15 @@ AddOrderFields decode_add_order(const std::byte* packet)
     // whats the best way to return these?
     AddOrderFields decoded_add_order{order_ref, side, shares, price};
     return decoded_add_order;
+}
+
+OrderExecutedFields decode_executed_order(const std::byte* packet)
+{
+    // need to read two params
+    std::uint64_t       order_ref       = read_be64(packet, OrderExecuted::order_ref);
+    std::uint32_t       executed_shares = read_be32(packet, OrderExecuted::executed_shares);
+    OrderExecutedFields executed_order{order_ref, executed_shares};
+    return executed_order;
 }
 
 } // namespace

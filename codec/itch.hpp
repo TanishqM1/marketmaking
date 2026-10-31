@@ -10,6 +10,27 @@
 namespace mm::itch
 {
 
+inline std::uint16_t read_be16(const std::byte* packet, std::size_t offset)
+{
+    std::uint16_t temp;
+    std::memcpy(&temp, &packet[offset], sizeof(temp));
+    return std::byteswap(temp);
+}
+
+inline std::uint32_t read_be32(const std::byte* packet, std::size_t offset)
+{
+    std::uint32_t temp;
+    std::memcpy(&temp, &packet[offset], sizeof(temp));
+    return std::byteswap(temp);
+}
+
+inline std::uint64_t read_be64(const std::byte* packet, std::size_t offset)
+{
+    std::uint64_t temp;
+    std::memcpy(&temp, &packet[offset], sizeof(temp));
+    return std::byteswap(temp);
+}
+
 struct MessageHeader
 {
     static constexpr std::size_t msg_type     = 0; // byte 0
