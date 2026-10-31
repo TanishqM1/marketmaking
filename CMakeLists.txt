@@ -40,6 +40,10 @@ target_compile_options(mm_warnings INTERFACE
 #   Release -O2 -g -march=native       -> measure latency here, never in Debug
 # ---------------------------------------------------------------------------
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fno-omit-frame-pointer")
+# TODO: missing -DNDEBUG. CMake's default Release is "-O3 -DNDEBUG"; overriding it
+# dropped NDEBUG, so asserts stay LIVE in the build we measure latency in.
+# TODO: -O2 is a deliberate choice over CMake's -O3 (less aggressive inlining =
+# less I-cache pressure). Try both once there is something to measure.
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -march=native")
 
 option(MM_SANITIZE "ASan + UBSan in Debug builds" ON)

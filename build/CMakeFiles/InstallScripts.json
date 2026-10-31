@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/cmake_install.cmake",
+		"/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/test/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -113,7 +113,16 @@ void decode_packet(std::span<const std::byte> packet)
     std::size_t offset = 0;
 
     // / TODO: decide if the decode_type funtions are being inlined, otherwise
-    // force them to be inlined.
+    // force them to be inlined. NOTE: inlining is not optional here -- AddOrderFields is
+    // 24 bytes, over the 16-byte register-return limit on AAPCS64, and no member ordering
+    // gets it under (8+4+4+1 = 17 minimum). So if it is ever out-of-lined we pay a hidden
+    // sret stack round-trip per message. Verify with -Rpass-missed=inline.
+    // TODO: the length check and `offset +=` are duplicated in all 7 cases. Once
+    // length_for(type) exists over all ~20 ITCH types, hoist both above the switch:
+    // one bounds check, one advance, no case can forget, and a length of 0 becomes the
+    // single "unknown type, cannot frame" bail -- which also fixes the default: hang.
+    // TODO: put [[unlikely]] on the truncation branches and [[gnu::cold]] on the error
+    // reporter, so the never-taken paths stop occupying I-cache next to the decoders.
 
     while (offset < packet.size())
     {
@@ -123,6 +132,11 @@ void decode_packet(std::span<const std::byte> packet)
 
         // read message type (dont need memcpy, can directly read!)
         auto type = static_cast<itch::MsgType>(packet.data()[offset + MessageHeader::msg_type]);
+        // TODO: stock_locate is decoded and then DISCARDED. It is the only symbol id in
+        // the message, so until it reaches the book every symbol collapses into one book
+        // (AAPL and MSFT adds applied to the same state). The locate -> book index
+        // dispatch is a per-message lookup, so design it for cache locality before
+        // state/ exists.
         std::uint16_t stock_locate = read_be16(packet.data(), offset + MessageHeader::stock_locate);
         // we can disregard tracking num & timestamp, it doesnt matter.
         // jump table with case : type, then parse the rest of the type.

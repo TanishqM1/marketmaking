@@ -1,0 +1,19 @@
+Start testing: Oct 30 23:24 PDT
+----------------------------------------------------------
+1/1 Testing: codec
+1/1 Test: codec
+Command: "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/test/test_codec"
+Directory: /Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/test
+"codec" start time: Oct 30 23:24 PDT
+Output:
+----------------------------------------------------------
+all tests passed
+<end of output>
+Test time =   0.40 sec
+----------------------------------------------------------
+Test Passed.
+"codec" end time: Oct 30 23:24 PDT
+"codec" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 30 23:24 PDT

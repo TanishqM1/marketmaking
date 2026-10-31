@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build",
+  "command": "/usr/bin/c++ -I/Users/tanishq/Desktop/prsnl/current_projects/marketmaking -O0 -g -fno-omit-frame-pointer -std=c++2b -arch arm64 -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wimplicit-fallthrough -Wpedantic -o CMakeFiles/mm_codec.dir/codec/itch.cpp.o -c /Users/tanishq/Desktop/prsnl/current_projects/marketmaking/codec/itch.cpp",
+  "file": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/codec/itch.cpp",
+  "output": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/CMakeFiles/mm_codec.dir/codec/itch.cpp.o"
+},
+{
+  "directory": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build",
+  "command": "/usr/bin/c++ -I/Users/tanishq/Desktop/prsnl/current_projects/marketmaking -O0 -g -fno-omit-frame-pointer -std=c++2b -arch arm64 -Wall -Wextra -Wconversion -Wsign-conversion -Wshadow -Wimplicit-fallthrough -Wpedantic -o test/CMakeFiles/test_codec.dir/codec/test_itch.cpp.o -c /Users/tanishq/Desktop/prsnl/current_projects/marketmaking/test/codec/test_itch.cpp",
+  "file": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/test/codec/test_itch.cpp",
+  "output": "/Users/tanishq/Desktop/prsnl/current_projects/marketmaking/build/test/CMakeFiles/test_codec.dir/codec/test_itch.cpp.o"
+}
+]

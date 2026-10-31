@@ -115,6 +115,10 @@ struct OrderExecutedWithPrice
     static constexpr std::size_t length = 36;
 };
 
+// TODO: DELETE THIS. (C) printable is never read -- it is a tape concern, not a book
+// concern. It also has the same latent bug Side had: enumerators are 0/1 but the wire
+// carries 'Y'/'N' (89/78), so any static_cast from the byte silently yields an
+// out-of-enumeration value. If it is ever needed, give it the ASCII values.
 enum class Printable : std::uint8_t
 {
     Yes,
@@ -174,6 +178,9 @@ struct OrderReplaceFields
 
 void decode_packet(std::span<const std::byte> packet);
 
+// TODO: DELETE these three. They are redundant -- the inline definitions at the top of
+// this file already declare them. Keeping both invites changing one signature and not
+// the other.
 std::uint16_t read_be16(const std::byte* packet, std::size_t offset);
 std::uint32_t read_be32(const std::byte* packet, std::size_t offset);
 std::uint64_t read_be64(const std::byte* packet, std::size_t offset);
