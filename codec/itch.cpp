@@ -52,6 +52,37 @@ OrderExecutedFields decode_executed_order(const std::byte* packet)
     return executed_order;
 }
 
+OrderCancelFields decode_cancel_order(const std::byte* packet)
+{
+    // partial cancel. cancelled_shares is how much to remove from the level.
+    std::uint64_t     order_ref        = read_be64(packet, OrderCancel::order_ref);
+    std::uint32_t     cancelled_shares = read_be32(packet, OrderCancel::cancelled_shares);
+    OrderCancelFields cancel_order{order_ref, cancelled_shares};
+    return cancel_order;
+}
+
+OrderDeleteFields decode_delete_order(const std::byte* packet)
+{
+    // only one field on the wire. the quantity to remove is the order's remaining
+    // shares, which only the order map knows.
+    std::uint64_t     order_ref = read_be64(packet, OrderDelete::order_ref);
+    OrderDeleteFields delete_order{order_ref};
+    return delete_order;
+}
+
+OrderReplaceFields decode_replace_order(const std::byte* packet)
+{
+    // two order refs. delete-then-add: remove original_order_ref's full remaining from
+    // its old level, erase it, then insert new_order_ref at the new price/shares.
+    // every later message uses the NEW ref.
+    std::uint64_t      original_order_ref = read_be64(packet, OrderReplace::original_order_ref);
+    std::uint64_t      new_order_ref      = read_be64(packet, OrderReplace::new_order_ref);
+    std::uint32_t      shares             = read_be32(packet, OrderReplace::shares);
+    std::uint32_t      price              = read_be32(packet, OrderReplace::price);
+    OrderReplaceFields replace_order{original_order_ref, new_order_ref, shares, price};
+    return replace_order;
+}
+
 } // namespace
 
 // "span" is a view over a contigous seuqence of objects it holds a pointer to the start of some

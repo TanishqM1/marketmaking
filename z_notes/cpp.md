@@ -356,3 +356,46 @@ knows every call site. See also: [cpp.md](cpp.md) — anonymous namespaces.
 **How to check:** Compiler Explorer at `-O2`, grep the asm for `[sp, #...]` — that's a stack
 access. None means everything stayed in registers.
 
+
+### Q: what does inlining actually do, and why is it good for small functions?
+
+It pastes the function's machine code at the call site instead of branching to it. That removes
+the call overhead **and**, more importantly, the optimisation barrier a call creates.
+
+**Example** — `read_be64(packet, AddOrder::order_ref)` where `order_ref` is `constexpr 11`:
+```
+NOT inlined                        INLINED
+  mov  w1, #0xb     <- pass 11       ldur x8, [x0, #0xb]   <- 11 is an immediate
+  b    read_be64                     rev  x0, x8
+    ldr x8, [x0, x1] <- reg offset    ret
+    rev x0, x8
+    ret
+5 instructions, 2 branches         3 instructions, 0 branches
+```
+
+**Three things it removed:**
+1. **Argument marshalling** — `11` had to become a value in `x1` because the ABI says so.
+2. **The branches.**
+3. **The optimisation barrier — the real win.** The compiler couldn't fold the offset into the
+   load's addressing mode because it couldn't see through the call. `[x0, x1]` becomes
+   `[x0, #0xb]`. *This is what makes `constexpr` offsets pay off* — a non-inlined call throws the
+   benefit away. Compounds across six field reads per message.
+
+**Gotcha — it is NOT about stack overhead.** There's no `sub sp` / `add sp` in either version.
+`read_be64` is a *leaf* function (calls nothing), so it never builds a stack frame. The "every
+call pushes a frame" model comes from `-O0` and from functions with enough locals to spill.
+
+**Gotcha — "at the expense of cache space" is conditional, and inverted here.**
+```
+inlined:      2 instructions x 6 call sites        = 12
+not inlined:  3-instruction fn + 6 call sequences  ~ 30
+```
+A function smaller than its own call sequence makes the binary **smaller** when inlined. The
+I-cache cost only applies to large bodies. See also:
+[opsys_machine_arch.md](opsys_machine_arch.md) — big functions and L1i.
+
+**Gotcha — the `inline` keyword does not request inlining.** It's an ODR exemption so the
+definition can appear in multiple TUs (i.e. live in a header). The optimiser decides the actual
+inlining, independently. Putting the definition in the header is what *enables* it, by making the
+body visible to callers.
+

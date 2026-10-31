@@ -109,14 +109,6 @@ enum class Printable : std::uint8_t
     No
 };
 
-struct OrderExecutedWithPriceFields
-{
-    std::uint64_t order_ref;
-    std::uint32_t executed_shares;
-    Printable     printable;
-    std::uint32_t execution_price;
-};
-
 // (X) Order Cancel. Partial -- cancelled_shares is how much to remove.
 struct OrderCancel
 {
@@ -139,6 +131,11 @@ struct OrderDelete
     static constexpr std::size_t order_ref = 11; // 8 bytes
 
     static constexpr std::size_t length = 19;
+};
+
+struct OrderDeleteFields
+{
+    std::uint64_t order_ref;
 };
 
 // (U) Order Replace. Two order refs. Delete the original's full remaining from
