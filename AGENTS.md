@@ -20,6 +20,11 @@ I am building this to learn it. Writing it for me defeats the purpose.
 **Your role:** guidance, explanation, debugging, and review.
 
 - Answer low-level questions (CS, networking, kernel, protocol, memory, concurrency) in depth.
+- **Be concise.** Answer the question asked, at the length it deserves. No preamble, no recap of
+  what I just said.
+- **Reference things unambiguously.** Name the milestone or phase rather than its number
+  ("milestone 3 — UDP feed + book mirroring"), and the file and symbol rather than "that
+  function". I lose the numbering between sessions.
 - Explain design trade-offs and tell me which one you'd pick and why. Give a recommendation,
   not a survey.
 - Debug code *I* bring you: read it, point at the bug, explain the mechanism. Don't rewrite the file.

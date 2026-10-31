@@ -144,13 +144,98 @@ void decode_packet(std::span<const std::byte> packet)
 
                 offset += AddOrder::length; // advance to the next message
                 break;
+            };
+
+            case MsgType::AddOrderWithMPID:
+            {
+                if (AddOrderWithMPID::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                // (F) is (A) + a 4-byte MPID appended, so all of AddOrder's offsets apply.
+                // ONLY the length differs -- 40 vs 36. this IS an add: skipping it would
+                // silently lose orders, and every later E/X/D for those refs would miss.
+                AddOrderFields addorderfields = decode_add_order(packet.data() + offset);
+                // logic to submit into market making book
+
+                offset += AddOrderWithMPID::length;
+                break;
+            }
+            case MsgType::OrderExecuted:
+            {
+                if (OrderExecuted::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                OrderExecutedFields executed_order = decode_executed_order(packet.data() + offset);
+                // TODO: market making book
+                offset += OrderExecuted::length;
+                break;
+            }
+
+            case MsgType::OrderExecutedWithPrice:
+            {
+                if (OrderExecutedWithPrice::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                // same decoder as (E): order_ref and executed_shares sit at the same offsets,
+                // and printable / execution_price are tape concerns we don't read.
+                // ONLY the length differs -- 36 vs 31. reuse the decoder, never the length.
+                OrderExecutedFields executed_order = decode_executed_order(packet.data() + offset);
+                // TODO: market making book
+                offset += OrderExecutedWithPrice::length;
+                break;
+            }
+
+            case MsgType::OrderCancel:
+            {
+                if (OrderCancel::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                OrderCancelFields cancel_order = decode_cancel_order(packet.data() + offset);
+                // TODO: market making book
+                offset += OrderCancel::length;
+                break;
+            }
+
+            case MsgType::OrderDelete:
+            {
+                if (OrderDelete::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                OrderDeleteFields delete_order = decode_delete_order(packet.data() + offset);
+                // TODO: market making book -- remove ref.remaining from its level, erase ref
+                offset += OrderDelete::length;
+                break;
+            }
+
+            case MsgType::OrderReplace:
+            {
+                if (OrderReplace::length > packet.size() - offset)
+                {
+                    // TODO: error handle
+                    return;
+                }
+                OrderReplaceFields replace_order = decode_replace_order(packet.data() + offset);
+                // TODO: market making book -- this is a DELETE + ADD, not a modify.
+                // remove original_order_ref's full remaining from its old level, erase it,
+                // then insert new_order_ref at the new price. all later messages use the new ref.
+                offset += OrderReplace::length;
+                break;
             }
 
             default:
                 // TODO: write error path, make cold path
                 break;
         }
-        // TODO: increment offset, do packet.subspan, add bounds check
     }
 }
 }; // namespace mm::itch
