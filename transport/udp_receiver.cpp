@@ -1,18 +1,17 @@
-#include <cstddef>      // Standard definitions (size_t)
-#include <cstdint>      // Fixed-width integer types (uint8_t, uint16_t)
-#include <cstring>      // For strerror() error text conversion
-#include <iostream>     // For std::cout and std::cerr diagnostics
-#include <netinet/in.h> // Internet domain structures (sockaddr_in, INADDR_ANY, htons)
-#include <stdexcept>    // Standard exception classes (std::runtime_error)
-#include <sys/socket.h> // Core POSIX socket mechanics (socket, bind, recvfrom, setsockopt)
-#include <unistd.h>     // Standard symbolic constants (close() file descriptor removal)
+#include <arpa/inet.h>  // htons() -- host to network byte order (big-endian)
+#include <cstdint>      // std::uint8_t, std::uint16_t
+#include <iostream>     // std::cerr -- startup diagnostics ONLY, never the hot path
+#include <netinet/in.h> // sockaddr_in, INADDR_ANY (IPv4 addressing structs)
+#include <stdexcept>    // std::runtime_error -- thrown on bind failure (startup, so a throw is fine)
+#include <sys/socket.h> // socket(), bind(), setsockopt(), recvfrom(), SOL_SOCKET, SO_RCVBUF
+#include <unistd.h>     // close() -- POSIX, releases the fd in the destructor
+// perror() comes from <cstdio>, currently pulled in transitively by <iostream>
 
 class UDP_Receiver
 {
     // member fields (private) representing internal state of "UDP_Receiver".
   private:
-    int  m_sockfd{-1}; // -1 = no socket. a valid fd is >= 0 (0 is legal), so check < 0 for error.
-    bool m_running                      = false; // running flag.
+    int m_sockfd{-1}; // -1 = no socket. a valid fd is >= 0 (0 is legal), so check < 0 for error.
     static constexpr size_t BUFFER_SIZE = 2048;
     // cache-line align the buffer. the compiler would NOT do this on its own -- default
     // alignment for uint8_t[] is 1. keeps the first message off a split line.
@@ -70,7 +69,6 @@ class UDP_Receiver
 
     ~UDP_Receiver()
     {
-        stop();
         if (m_sockfd >= 0)
         {
             ::close(m_sockfd);
@@ -85,9 +83,6 @@ class UDP_Receiver
     // be created.
     UDP_Receiver(const UDP_Receiver&)            = delete;
     UDP_Receiver& operator=(const UDP_Receiver&) = delete;
-
-    // explicit flag to stop the hot-path execution completely.
-    void stop() { m_running = false; };
 
     // HOT-PATH EXECUTION LOOP. finally the part that actually matters.
     // if we u

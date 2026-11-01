@@ -1,7 +1,7 @@
-#include <arpa/inet.h>
-#include <cstring>
-#include <iostream>
-#include <netinet/in.h> // structure library for internet addressing
-#include <sys/socket.h> // required for all socket functions
-#include <sys/types.h>  //
-#include <unistd.h>     // POSIX (spec rulebook), we use it for close() on macOS
+#pragma once
+
+#include <cstddef> // std::byte (raw bytes), std::size_t (BUFFER_SIZE)
+#include <cstdint> // std::uint16_t (port number)
+#include <span>    // std::span -- receive()'s return type, {ptr, size}
+
+namespace
