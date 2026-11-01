@@ -275,3 +275,58 @@ question is mostly moot.
 datagram, overwritten on every read. A ring buffer only earns its place later: receive and decode
 on different threads (SPSC ring between them), or with kernel bypass (NIC DMAs into a ring of
 *our* buffers and we poll it).
+
+
+### Q: what does each part of udp_receiver.cpp do?
+
+Three parts with three different lifetimes: **constructor** runs once (open + bind a socket),
+**destructor** runs once (close it), **receive()** runs millions of times (one syscall, one
+packet).
+
+```
+ctor        socket() -> setsockopt(SO_RCVBUF) -> bind()      setup, once
+~dtor       close(fd_)                                        RAII cleanup, once
+receive()   recvfrom() -> return {buffer_, n}                 hot path, per packet
+```
+
+- **`socket()`** — asks the kernel for an endpoint object + a receive queue, returns an fd.
+  `AF_INET` = IPv4, `SOCK_DGRAM` = UDP.
+- **`setsockopt(SO_RCVBUF)`** — grows the **kernel's** queue. Prevents DROPS during bursts; does
+  nothing for latency.
+- **`bind()`** — "give me packets arriving on this port." Skip it and you receive nothing,
+  silently. `htons(port)` is mandatory: ports are network byte order (big-endian).
+- **`receive()`** — does NOT decode. Returns bytes; `app/main.cpp` calls `decode_packet`.
+  Keeping codec out of transport is what makes the kernel-bypass swap a one-file change.
+
+**recvfrom's 6 params:**
+```
+recvfrom(fd_,          // 1 which socket's queue to read
+         buffer_,      // 2 destination - where to copy TO
+         BUFFER_SIZE,  // 3 CAPACITY of that destination (not expected size)
+         0,            // 4 flags bitmask. 0 = no modifiers = BLOCKING.
+         nullptr,      // 5 out-param for sender's address - we don't care
+         nullptr);     // 6 pairs with 5, same value
+```
+
+It copies **one** datagram from the kernel queue into our buffer and **returns only an
+`ssize_t`** — the byte count. The data arrived as a side effect.
+```
+n > 0    bytes copied -> return {buffer_, n}
+n == 0   valid EMPTY datagram, not EOF
+n == -1  error, reason in errno:
+           EAGAIN/EWOULDBLOCK -> nothing available (normal with MSG_DONTWAIT)
+           EINTR              -> signal interrupted, retry
+           anything else      -> socket is broken, BAIL (don't loop, you'll spin at 100%)
+```
+
+**Gotcha — check `n < 0` BEFORE casting to size_t.** Cast -1 to unsigned and you get
+18446744073709551615, so `span{buffer_, that}` is a 16-exabyte span and any read is instant UB.
+
+**Gotcha 2 — param 4 takes `MSG_*` flags, not `IPPROTO_*`.** `IPPROTO_UDP` belongs to `socket()`.
+It's the number 17, so passing it to recvfrom silently turns on two arbitrary MSG bits. Compiles
+fine — both params are plain `int`. (Exactly the mix-up strong types like `Price`/`Qty` prevent.)
+
+**Blocking (`flags = 0`) vs busy-poll (`MSG_DONTWAIT`):** blocking sleeps the thread and the
+kernel wakes it — 2 context switches, microseconds, and **jittery**. Busy-poll spins and never
+sleeps: burns a whole core, best tail latency. HFT always busy-polls. `receive()` returning a
+possibly-empty span is what lets us switch with one line and no change to `main.cpp`.
