@@ -177,3 +177,101 @@ Same two-instruction shape, but arm64's flags are implicit state rather than a n
 **Gotcha:** register *roles* (`x0` = first argument) are a **software convention**, not hardware.
 The CPU doesn't care. It's the ABI — which is also why a struct >16 bytes gets returned through
 memory: the ABI says so, not the chip. See also: [cpp.md](cpp.md) — when structs exist in memory.
+
+
+### Q: what does recvfrom actually do? isn't there a ring buffer anyway, it just goes through the kernel stack first?
+
+Yes — **the NIC uses a ring buffer by default.** It's just in *kernel* memory, and the *kernel*
+reads it, not you. `recvfrom` doesn't touch that ring; it fetches an already-processed packet
+from the socket's queue, which sits downstream of all the stack work.
+
+**Three places a packet sits in the normal path:**
+```
+1. NIC RX ring       <- NIC DMAs the packet here (kernel memory)
+   |  interrupt -> kernel does the stack work
+2. socket queue      <- processed packet, waiting for you
+   |  recvfrom copies it
+3. your buffer       <- what decode_packet sees
+```
+
+**What `recvfrom` does — only 4 things:**
+1. syscall transition (user -> kernel privilege)
+2. look at the socket's receive queue
+3. **copy** the bytes into your buffer
+4. transition back
+
+That's it. Not "check if a packet arrived and process it" — the processing already happened
+earlier, in interrupt context, on whatever core the NIC's interrupt landed on.
+
+**What happened between ring and queue (all of this is what bypass deletes):**
+- interrupt fires, kernel schedules a softirq
+- driver pulls the packet off the RX ring, wraps it in an **skb** (kernel packet struct = an allocation)
+- ethernet header check
+- IP layer: checksum, routing decision, **netfilter** hooks (firewall rules run here)
+- UDP layer: checksum, **look up which socket** owns this port
+- queue the skb on that socket
+
+None of it runs on your thread, but it's all latency between the wire and you.
+
+| | normal socket | bypass |
+|---|---|---|
+| NIC DMAs into | kernel ring | **your buffer** |
+| who notices | interrupt -> softirq | you poll |
+| skb allocated | yes | no |
+| eth/IP/UDP stack, netfilter | yes | **none** |
+| socket lookup | yes | none |
+| copy to you | yes | **no** |
+| syscall | yes | **no** |
+
+Bypass collapses the three locations into **one**: your buffer *is* the DMA target. The NIC
+writes straight into memory your process owns, and you poll a ring in your own address space.
+
+**Gotcha — there's a middle ground, and it's the one that works on macOS:**
+```
+blocking recvfrom    syscall + copy + THREAD SLEEPS, then a context switch to wake
+busy-poll            syscall + copy. no sleep, no wake.
+bypass               neither
+```
+The sleep-and-wake is microseconds *and* highly variable — the worst thing for tail latency.
+That's why trading systems busy-poll: burn a core spinning so the thread is never asleep when a
+packet lands. Measuring blocking vs busy-poll is a real number we CAN get on this machine.
+
+
+### Q: the NIC ring buffer holds pointers only, right? so a packet is always contiguous when copied to us?
+
+Right. **The NIC ring contains descriptors, not packet bytes** — small fixed-size structs
+(~16-32 bytes) that each *point to* a separate buffer elsewhere in memory. The ring wraps; the
+packets don't, because they aren't stored in the ring at all.
+
+```
+NIC ring:   [desc][desc][desc][desc]...   <- circular, wraps around
+               |     |     |
+               v     v     v
+buffers:    [pkt] [pkt] [pkt]              <- each separate, each contiguous
+```
+
+So the "what if a packet wraps around the end of the ring" problem **does not exist**. Each
+packet sits in its own contiguous buffer.
+
+**Example:** the buffers are fixed-size *slots* (typically 2KB, or page-sized). The packet
+occupying one is whatever length actually arrived — a 1400-byte datagram in a 2KB slot. Fixed
+slots, variable-length packets.
+
+**The full path to our buffer** (note the skb step — it's not a direct copy from the
+descriptor's buffer):
+```
+NIC DMAs packet into a buffer, writes a descriptor into the ring
+driver reads the descriptor -> finds the buffer -> wraps it in an skb
+stack processes the skb (eth/IP/UDP), queues it on the socket
+recvfrom copies from the skb into OUR flat array
+```
+
+**Gotcha:** an skb *can* be non-linear — data split across fragments, for large or
+hardware-offloaded packets. `recvfrom` handles that by walking the fragments and handing us one
+contiguous result either way. For a 1400-byte UDP datagram it's typically one piece, so the
+question is mostly moot.
+
+**Gotcha 2:** our flat array is **not** a ring buffer. One 64KB array, holds exactly one
+datagram, overwritten on every read. A ring buffer only earns its place later: receive and decode
+on different threads (SPSC ring between them), or with kernel bypass (NIC DMAs into a ring of
+*our* buffers and we poll it).
