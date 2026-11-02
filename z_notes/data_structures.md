@@ -82,3 +82,30 @@ continues through, needing an occasional rehash) or backward-shift deletion.
 > Worth exploring: refs are broadly sequential, so `ref - session_base` might be dense enough to
 > index an array directly with **no hashing**. The catch is range — a venue may issue 100M+ refs a
 > day, trading hashing for TLB pressure. Measure if you get there.
+
+### Load factor — why ≤ 0.5
+`used_ / CAPACITY` high → longer probes, for **both** operations:
+```
+insert  probe until an EMPTY or TOMBSTONE slot to write into
+find    probe until the ref matches, or EMPTY
+```
+
+Degrades non-linearly, because occupied runs merge and a ref hashing *anywhere* into a run must
+traverse all of it:
+```
+0.50 -> 1.5 probes     0.90 -> 5.5    <- 1.3x the fill, 2.5x the probes
+0.70 -> 2.2            0.95 -> 10.5
+```
+
+**The real cliff is the cache line, not the probe count.** At 32-byte entries, 4 fit per 128-byte
+line — probes 1-4 are free, probe 5 is a new miss:
+```
+1.5 probes  ~ one line     ~200 cycles
+5.5 probes  ~ two lines    ~400
+10.5        ~ three        ~600
+```
+So keep load ≤ 0.5 to stay inside one line. Not because 1.5 probes is "fast enough."
+
+⚠ **If `used_` ever reaches CAPACITY there is no EMPTY slot to stop at, and `find()` on an absent
+ref loops forever** — an infinite loop in the hot path. Assert `used_ < CAPACITY` on insert, and
+bound the probe count in release with a counter on the give-up path.
