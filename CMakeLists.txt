@@ -62,8 +62,12 @@ endif()
 # ---------------------------------------------------------------------------
 # targets
 #
-# types/ is header-only and must compile with every other folder deleted.
-# codec/ owns all wire knowledge and depends only on types/.
+# One library per layer, and the link lines ARE the dependency rules:
+#   types/     header-only, depends on nothing, must compile with all else deleted
+#   codec/     all wire knowledge. depends only on types/.
+#   transport/ sockets and bytes. depends only on types/ -- NOT on codec/, which is
+#              what keeps receive() swappable for a kernel-bypass implementation.
+#   app/       the only thing that depends on everything. owns the event loop.
 # ---------------------------------------------------------------------------
 add_library(mm_types INTERFACE)
 target_include_directories(mm_types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -73,6 +77,18 @@ add_library(mm_codec STATIC
 )
 target_include_directories(mm_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mm_codec PUBLIC mm_types PRIVATE mm_warnings mm_sanitizers)
+
+# Deliberately does NOT link mm_codec. If this ever needs to, the layering broke.
+add_library(mm_transport STATIC
+    transport/udp_receiver.cpp
+)
+target_include_directories(mm_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mm_transport PUBLIC mm_types PRIVATE mm_warnings mm_sanitizers)
+
+add_executable(trading_system
+    app/main.cpp
+)
+target_link_libraries(trading_system PRIVATE mm_transport mm_codec mm_warnings mm_sanitizers)
 
 # ---------------------------------------------------------------------------
 # tests

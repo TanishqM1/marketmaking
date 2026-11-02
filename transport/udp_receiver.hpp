@@ -23,7 +23,7 @@ class UDP_Receiver
     // receiver.receive();              // warning: ignoring return value of 'receive'
     // auto pkt = receiver.receive();   // fine
     // it ensures we resolve the function call to an actual veraible, and we don't just discard it!.
-    [[nodiscard]] ssize_t receive();
+    [[nodiscard]] std::span<const std::byte> receive();
 
   private:
     //   outlining the constants in the file.
@@ -32,6 +32,6 @@ class UDP_Receiver
     // we want to align the buffer correctly in memory.
     static constexpr std::size_t BUFFER_SIZE = 65536;
     int                          m_sockfd{-1};
-    alignas(64) uint8_t m_buffer[BUFFER_SIZE];
+    alignas(64) std::byte m_buffer[BUFFER_SIZE];
 };
 } // namespace mm::transport

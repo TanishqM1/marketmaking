@@ -1,4 +1,5 @@
-#include <arpa/inet.h>  // htons() -- host to network byte order (big-endian)
+#include <arpa/inet.h> // htons() -- host to network byte order (big-endian)
+#include <cerrno>
 #include <cstdint>      // std::uint8_t, std::uint16_t
 #include <iostream>     // std::cerr -- startup diagnostics ONLY, never the hot path
 #include <netinet/in.h> // sockaddr_in, INADDR_ANY (IPv4 addressing structs)
@@ -58,10 +59,20 @@ UDP_Receiver::UDP_Receiver(std::uint16_t port)
 
 // recvfrom params: recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr
 // *src_addr, socklen_t *addrlen);
-ssize_t UDP_Receiver::receive()
+std::span<const std::byte> UDP_Receiver::receive()
 {
     // call recvfrom, then return the span (packet address, size) pair.
-    recvfrom(m_sockfd, m_buffer, BUFFER_SIZE, 0, nullptr, nullptr);
+    ssize_t return_code = recvfrom(m_sockfd, m_buffer, BUFFER_SIZE, 0, nullptr, nullptr);
+    if (return_code < 0)
+    {
+        // TODO: handle errors! currently it flows through and returns an empty span.
+    }
+    if (return_code > 0)
+    {
+        return {m_buffer, static_cast<std::size_t>(return_code)};
+    }
+    // empty datagram!
+    return {};
 }
 
 // destructor: RAII. releases the fd when the object goes out of scope, on every path
