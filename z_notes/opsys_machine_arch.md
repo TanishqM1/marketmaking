@@ -177,3 +177,200 @@ Same two-instruction shape, but arm64's flags are implicit state rather than a n
 **Gotcha:** register *roles* (`x0` = first argument) are a **software convention**, not hardware.
 The CPU doesn't care. It's the ABI — which is also why a struct >16 bytes gets returned through
 memory: the ABI says so, not the chip. See also: [cpp.md](cpp.md) — when structs exist in memory.
+
+
+### Q: what does recvfrom actually do? isn't there a ring buffer anyway, it just goes through the kernel stack first?
+
+Yes — **the NIC uses a ring buffer by default.** It's just in *kernel* memory, and the *kernel*
+reads it, not you. `recvfrom` doesn't touch that ring; it fetches an already-processed packet
+from the socket's queue, which sits downstream of all the stack work.
+
+**Three places a packet sits in the normal path:**
+```
+1. NIC RX ring       <- NIC DMAs the packet here (kernel memory)
+   |  interrupt -> kernel does the stack work
+2. socket queue      <- processed packet, waiting for you
+   |  recvfrom copies it
+3. your buffer       <- what decode_packet sees
+```
+
+**What `recvfrom` does — only 4 things:**
+1. syscall transition (user -> kernel privilege)
+2. look at the socket's receive queue
+3. **copy** the bytes into your buffer
+4. transition back
+
+That's it. Not "check if a packet arrived and process it" — the processing already happened
+earlier, in interrupt context, on whatever core the NIC's interrupt landed on.
+
+**What happened between ring and queue (all of this is what bypass deletes):**
+- interrupt fires, kernel schedules a softirq
+- driver pulls the packet off the RX ring, wraps it in an **skb** (kernel packet struct = an allocation)
+- ethernet header check
+- IP layer: checksum, routing decision, **netfilter** hooks (firewall rules run here)
+- UDP layer: checksum, **look up which socket** owns this port
+- queue the skb on that socket
+
+None of it runs on your thread, but it's all latency between the wire and you.
+
+| | normal socket | bypass |
+|---|---|---|
+| NIC DMAs into | kernel ring | **your buffer** |
+| who notices | interrupt -> softirq | you poll |
+| skb allocated | yes | no |
+| eth/IP/UDP stack, netfilter | yes | **none** |
+| socket lookup | yes | none |
+| copy to you | yes | **no** |
+| syscall | yes | **no** |
+
+Bypass collapses the three locations into **one**: your buffer *is* the DMA target. The NIC
+writes straight into memory your process owns, and you poll a ring in your own address space.
+
+**Gotcha — there's a middle ground, and it's the one that works on macOS:**
+```
+blocking recvfrom    syscall + copy + THREAD SLEEPS, then a context switch to wake
+busy-poll            syscall + copy. no sleep, no wake.
+bypass               neither
+```
+The sleep-and-wake is microseconds *and* highly variable — the worst thing for tail latency.
+That's why trading systems busy-poll: burn a core spinning so the thread is never asleep when a
+packet lands. Measuring blocking vs busy-poll is a real number we CAN get on this machine.
+
+
+### Q: the NIC ring buffer holds pointers only, right? so a packet is always contiguous when copied to us?
+
+Right. **The NIC ring contains descriptors, not packet bytes** — small fixed-size structs
+(~16-32 bytes) that each *point to* a separate buffer elsewhere in memory. The ring wraps; the
+packets don't, because they aren't stored in the ring at all.
+
+```
+NIC ring:   [desc][desc][desc][desc]...   <- circular, wraps around
+               |     |     |
+               v     v     v
+buffers:    [pkt] [pkt] [pkt]              <- each separate, each contiguous
+```
+
+So the "what if a packet wraps around the end of the ring" problem **does not exist**. Each
+packet sits in its own contiguous buffer.
+
+**Example:** the buffers are fixed-size *slots* (typically 2KB, or page-sized). The packet
+occupying one is whatever length actually arrived — a 1400-byte datagram in a 2KB slot. Fixed
+slots, variable-length packets.
+
+**The full path to our buffer** (note the skb step — it's not a direct copy from the
+descriptor's buffer):
+```
+NIC DMAs packet into a buffer, writes a descriptor into the ring
+driver reads the descriptor -> finds the buffer -> wraps it in an skb
+stack processes the skb (eth/IP/UDP), queues it on the socket
+recvfrom copies from the skb into OUR flat array
+```
+
+**Gotcha:** an skb *can* be non-linear — data split across fragments, for large or
+hardware-offloaded packets. `recvfrom` handles that by walking the fragments and handing us one
+contiguous result either way. For a 1400-byte UDP datagram it's typically one piece, so the
+question is mostly moot.
+
+**Gotcha 2:** our flat array is **not** a ring buffer. One 64KB array, holds exactly one
+datagram, overwritten on every read. A ring buffer only earns its place later: receive and decode
+on different threads (SPSC ring between them), or with kernel bypass (NIC DMAs into a ring of
+*our* buffers and we poll it).
+
+
+### Q: what does each part of udp_receiver.cpp do?
+
+Three parts with three different lifetimes: **constructor** runs once (open + bind a socket),
+**destructor** runs once (close it), **receive()** runs millions of times (one syscall, one
+packet).
+
+```
+ctor        socket() -> setsockopt(SO_RCVBUF) -> bind()      setup, once
+~dtor       close(fd_)                                        RAII cleanup, once
+receive()   recvfrom() -> return {buffer_, n}                 hot path, per packet
+```
+
+- **`socket()`** — asks the kernel for an endpoint object + a receive queue, returns an fd.
+  `AF_INET` = IPv4, `SOCK_DGRAM` = UDP.
+- **`setsockopt(SO_RCVBUF)`** — grows the **kernel's** queue. Prevents DROPS during bursts; does
+  nothing for latency.
+- **`bind()`** — "give me packets arriving on this port." Skip it and you receive nothing,
+  silently. `htons(port)` is mandatory: ports are network byte order (big-endian).
+- **`receive()`** — does NOT decode. Returns bytes; `app/main.cpp` calls `decode_packet`.
+  Keeping codec out of transport is what makes the kernel-bypass swap a one-file change.
+
+**recvfrom's 6 params:**
+```
+recvfrom(fd_,          // 1 which socket's queue to read
+         buffer_,      // 2 destination - where to copy TO
+         BUFFER_SIZE,  // 3 CAPACITY of that destination (not expected size)
+         0,            // 4 flags bitmask. 0 = no modifiers = BLOCKING.
+         nullptr,      // 5 out-param for sender's address - we don't care
+         nullptr);     // 6 pairs with 5, same value
+```
+
+It copies **one** datagram from the kernel queue into our buffer and **returns only an
+`ssize_t`** — the byte count. The data arrived as a side effect.
+```
+n > 0    bytes copied -> return {buffer_, n}
+n == 0   valid EMPTY datagram, not EOF
+n == -1  error, reason in errno:
+           EAGAIN/EWOULDBLOCK -> nothing available (normal with MSG_DONTWAIT)
+           EINTR              -> signal interrupted, retry
+           anything else      -> socket is broken, BAIL (don't loop, you'll spin at 100%)
+```
+
+**Gotcha — check `n < 0` BEFORE casting to size_t.** Cast -1 to unsigned and you get
+18446744073709551615, so `span{buffer_, that}` is a 16-exabyte span and any read is instant UB.
+
+**Gotcha 2 — param 4 takes `MSG_*` flags, not `IPPROTO_*`.** `IPPROTO_UDP` belongs to `socket()`.
+It's the number 17, so passing it to recvfrom silently turns on two arbitrary MSG bits. Compiles
+fine — both params are plain `int`. (Exactly the mix-up strong types like `Price`/`Qty` prevent.)
+
+**Blocking (`flags = 0`) vs busy-poll (`MSG_DONTWAIT`):** blocking sleeps the thread and the
+kernel wakes it — 2 context switches, microseconds, and **jittery**. Busy-poll spins and never
+sleeps: burns a whole core, best tail latency. HFT always busy-polls. `receive()` returning a
+possibly-empty span is what lets us switch with one line and no change to `main.cpp`.
+
+
+### Q: is the principle that we only want the happy/hot path in the cache line?
+
+Yes. Stated precisely: **the bytes you fetch should be bytes you execute.** A cache line is 128
+bytes on this machine and the CPU can't fetch half a line — so if a line is 60% hot path and 40%
+error handling, 40% of that fetch was wasted.
+
+Cold code isn't "outside the cache" — it lives at a **far-away address**, so it never lands in the
+same line as the hot path. If the error fires you pay one miss to fetch it, for something that
+approximately never happens.
+
+**Helper flags / keywords that do this:**
+
+| | what it does |
+|---|---|
+| `[[unlikely]]` / `[[likely]]` | C++20 attributes. Move a cold **branch body** out of line, and make the hot path the fall-through (a taken branch costs a pipeline redirect; fall-through is free). The *test itself* still runs every time. |
+| `[[gnu::cold]]` | GCC/Clang. Moves a whole **function** to `.text.unlikely`, optimises it for size not speed, AND marks every branch reaching it as unlikely — so it propagates, no need to annotate each call site. |
+| `[[gnu::hot]]` | the opposite: `.text.hot`, so the linker groups hot functions contiguously. |
+| `[[gnu::noinline]]` | stop a cold function being inlined into the hot path, where it would bloat the footprint. |
+| `-ffunction-sections` + linker order file | explicit symbol ordering, fed from `perf` data. |
+| PGO / BOLT | measure what's hot, then physically reorder the binary. Beats hand annotation. |
+
+**Example** — our `receive()`:
+```cpp
+if (return_code <= 0) [[unlikely]] { return {}; }   // cold body moves away
+return {m_buffer, static_cast<std::size_t>(return_code)};  // fall-through, straight-line
+```
+
+**It applies to DATA too, not just code.** The order-ref map entry is the big one — millions of
+them, and the fields a lookup touches should fit in one line rather than spanning two. Same
+principle, L1d instead of L1i.
+
+**Gotcha — it's about density, not just size.** A 50KB hot path packed contiguously can beat a
+10KB one scattered across the binary, because the scattered version wastes most of every line it
+pulls in and touches more cache sets.
+
+**Gotcha 2 — none of this is measurable at our current scale.** The hot path is a couple hundred
+bytes against 192KB of L1i, and our `[[unlikely]]` body is literally `return {}` (two
+instructions — nothing to move). It becomes real once the book builder, strategy and risk checks
+are all in the loop, which is exactly when retrofitting would be annoying. Build the habit now,
+don't claim a win.
+
+See also: [bad_habits.md](bad_habits.md) — keeping error handling out of the hot path.

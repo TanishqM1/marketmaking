@@ -82,10 +82,10 @@ void test_read_be()
 {
     // big-endian on the wire -> native on read
     const std::byte buf[] = {
-        std::byte{0x00}, std::byte{0x01},                                    // 1
-        std::byte{0x00}, std::byte{0x00}, std::byte{0x01}, std::byte{0xF4},  // 500
+        std::byte{0x00}, std::byte{0x01},                                   // 1
+        std::byte{0x00}, std::byte{0x00}, std::byte{0x01}, std::byte{0xF4}, // 500
         std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-        std::byte{0x3D}, std::byte{0x5C}, std::byte{0xB4}, std::byte{0xC1},  // 1029485761
+        std::byte{0x3D}, std::byte{0x5C}, std::byte{0xB4}, std::byte{0xC1}, // 1029485761
     };
 
     CHECK_EQ(mm::itch::read_be16(buf, 0), 1u);
@@ -100,31 +100,44 @@ void test_decode_add_order()
 {
     std::byte msg[mm::itch::AddOrder::length]{};
 
-    msg[0] = std::byte{'A'};                               // msg type
-    msg[1] = std::byte{0x00}; msg[2] = std::byte{0x2A};    // stock_locate = 42
+    msg[0] = std::byte{'A'}; // msg type
+    msg[1] = std::byte{0x00};
+    msg[2] = std::byte{0x2A}; // stock_locate = 42
     // bytes 3-4 tracking, 5-10 timestamp: left zero, we don't read them
 
     // order_ref = 1029485761 at offset 11 (8 bytes, big-endian)
-    msg[11] = std::byte{0x00}; msg[12] = std::byte{0x00};
-    msg[13] = std::byte{0x00}; msg[14] = std::byte{0x00};
-    msg[15] = std::byte{0x3D}; msg[16] = std::byte{0x5C};
-    msg[17] = std::byte{0xB4}; msg[18] = std::byte{0xC1};
+    msg[11] = std::byte{0x00};
+    msg[12] = std::byte{0x00};
+    msg[13] = std::byte{0x00};
+    msg[14] = std::byte{0x00};
+    msg[15] = std::byte{0x3D};
+    msg[16] = std::byte{0x5C};
+    msg[17] = std::byte{0xB4};
+    msg[18] = std::byte{0xC1};
 
-    msg[19] = std::byte{'B'};                              // side
+    msg[19] = std::byte{'B'}; // side
 
     // shares = 500 at offset 20 (4 bytes)
-    msg[20] = std::byte{0x00}; msg[21] = std::byte{0x00};
-    msg[22] = std::byte{0x01}; msg[23] = std::byte{0xF4};
+    msg[20] = std::byte{0x00};
+    msg[21] = std::byte{0x00};
+    msg[22] = std::byte{0x01};
+    msg[23] = std::byte{0xF4};
 
     // stock = "AAPL    " at offset 24 (8 bytes) -- not read, but set it anyway
-    msg[24] = std::byte{'A'}; msg[25] = std::byte{'A'};
-    msg[26] = std::byte{'P'}; msg[27] = std::byte{'L'};
-    msg[28] = std::byte{' '}; msg[29] = std::byte{' '};
-    msg[30] = std::byte{' '}; msg[31] = std::byte{' '};
+    msg[24] = std::byte{'A'};
+    msg[25] = std::byte{'A'};
+    msg[26] = std::byte{'P'};
+    msg[27] = std::byte{'L'};
+    msg[28] = std::byte{' '};
+    msg[29] = std::byte{' '};
+    msg[30] = std::byte{' '};
+    msg[31] = std::byte{' '};
 
     // price = 175.2500 -> 1752500 at offset 32 (4 bytes, 4 implied decimals)
-    msg[32] = std::byte{0x00}; msg[33] = std::byte{0x1A};
-    msg[34] = std::byte{0xBD}; msg[35] = std::byte{0xB4};
+    msg[32] = std::byte{0x00};
+    msg[33] = std::byte{0x1A};
+    msg[34] = std::byte{0xBD};
+    msg[35] = std::byte{0xB4};
 
     const auto f = mm::itch::detail::decode_add_order(msg);
 
@@ -140,11 +153,15 @@ void test_decode_delete_order()
 {
     std::byte msg[mm::itch::OrderDelete::length]{};
 
-    msg[0] = std::byte{'D'};
-    msg[11] = std::byte{0x00}; msg[12] = std::byte{0x00};
-    msg[13] = std::byte{0x00}; msg[14] = std::byte{0x00};
-    msg[15] = std::byte{0x3D}; msg[16] = std::byte{0x5C};
-    msg[17] = std::byte{0xB4}; msg[18] = std::byte{0xC1};
+    msg[0]  = std::byte{'D'};
+    msg[11] = std::byte{0x00};
+    msg[12] = std::byte{0x00};
+    msg[13] = std::byte{0x00};
+    msg[14] = std::byte{0x00};
+    msg[15] = std::byte{0x3D};
+    msg[16] = std::byte{0x5C};
+    msg[17] = std::byte{0xB4};
+    msg[18] = std::byte{0xC1};
 
     const auto f = mm::itch::detail::decode_delete_order(msg);
     CHECK_EQ(f.order_ref, 1029485761u);

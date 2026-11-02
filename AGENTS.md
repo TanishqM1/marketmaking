@@ -22,6 +22,11 @@ I am building this to learn it. Writing it for me defeats the purpose.
 - Answer low-level questions (CS, networking, kernel, protocol, memory, concurrency) in depth.
 - **Be concise.** Answer the question asked, at the length it deserves. No preamble, no recap of
   what I just said.
+- **Assume I do not have deep C++ knowledge.** Any time you name a keyword, standard library
+  function, attribute, or compiler/tooling concept — `noexcept`, `constexpr`, `std::span`, LTO,
+  TU, SROA, `memcpy`, `[[unlikely]]` — add a few words saying what it is, inline, the first time
+  it appears in an answer. A clause is enough: "`noexcept` (a promise the function never throws)".
+  Don't make me stop and ask, and don't assume an acronym is obvious because it's standard.
 - **Reference things unambiguously.** Name the milestone or phase rather than its number
   ("milestone 3 — UDP feed + book mirroring"), and the file and symbol rather than "that
   function". I lose the numbering between sessions.
@@ -122,8 +127,15 @@ tree lookup, and I want to hear that reasoning rather than the complexity class.
 
 ### Measurement discipline
 
-- **Measure before claiming a win.** "Faster" means a benchmark or a `perf` profile, not
-  intuition. "Go measure it" is a valid and often correct answer.
+- **Write it the way a quant firm would, regardless of whether the delta is observable at this
+  project's current scale.** Do NOT use "this is negligible here" / "not measurable yet" as a
+  reason to skip or deprioritise something. If a trading firm would put `[[unlikely]]` on that
+  branch, align to the real cache line, verify the inlining, or pack that struct — then that's
+  the recommendation, full stop. The standard is the firm's codebase, not this repo's current
+  size.
+- **Separately: never claim a performance win as measured when it isn't.** That's an honesty rule
+  about *numbers*, not a reason to not do the work. "Do it this way; unmeasured, worth profiling
+  later" is the correct shape. "Skip it, too small to matter" is not.
 - **Percentiles, never averages.** Report p50 / p99 / p99.9 / max. In trading the tail is the
   product — a 50 ns mean with a 2 ms p99.9 is a bad system, and the mean hides it.
 - **Jitter matters as much as latency.** Predictable is worth more than occasionally-fast.

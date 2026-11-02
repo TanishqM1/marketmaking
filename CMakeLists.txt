@@ -62,8 +62,12 @@ endif()
 # ---------------------------------------------------------------------------
 # targets
 #
-# types/ is header-only and must compile with every other folder deleted.
-# codec/ owns all wire knowledge and depends only on types/.
+# One library per layer, and the link lines ARE the dependency rules:
+#   types/     header-only, depends on nothing, must compile with all else deleted
+#   codec/     all wire knowledge. depends only on types/.
+#   transport/ sockets and bytes. depends only on types/ -- NOT on codec/, which is
+#              what keeps receive() swappable for a kernel-bypass implementation.
+#   app/       the only thing that depends on everything. owns the event loop.
 # ---------------------------------------------------------------------------
 add_library(mm_types INTERFACE)
 target_include_directories(mm_types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -73,6 +77,44 @@ add_library(mm_codec STATIC
 )
 target_include_directories(mm_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mm_codec PUBLIC mm_types PRIVATE mm_warnings mm_sanitizers)
+
+# Deliberately does NOT link mm_codec. If this ever needs to, the layering broke.
+add_library(mm_transport STATIC
+    transport/udp_receiver.cpp
+)
+target_include_directories(mm_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mm_transport PUBLIC mm_types PRIVATE mm_warnings mm_sanitizers)
+
+add_executable(trading_system
+    app/main.cpp
+)
+target_link_libraries(trading_system PRIVATE mm_transport mm_codec mm_warnings mm_sanitizers)
+
+# ---------------------------------------------------------------------------
+# LTO (Link Time Optimization) -- Release only.
+#
+# Normally each .cpp is compiled to finished machine code in isolation, so when the
+# compiler builds main.cpp it has never seen receive()'s or decode_packet()'s body and
+# must emit an opaque call. Our hot loop pays for that twice per packet, and main's
+# `packet.empty()` re-tests something receive() already decided.
+#
+# LTO makes each .o store a half-compiled intermediate form instead, and hands all of
+# them to the optimiser at LINK time -- so it can finally inline across files.
+#
+# This does NOT weaken the layering: LTO merges only at code generation. Source files,
+# headers and the CMake dependency graph above are untouched.
+#
+# Release only because it makes builds much slower and debugging harder.
+# ---------------------------------------------------------------------------
+include(CheckIPOSupported)
+check_ipo_supported(RESULT MM_LTO_OK OUTPUT MM_LTO_WHY)
+
+if(MM_LTO_OK)
+    set_property(TARGET trading_system mm_transport mm_codec
+                 PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+else()
+    message(WARNING "LTO unavailable, building without it: ${MM_LTO_WHY}")
+endif()
 
 # ---------------------------------------------------------------------------
 # tests

@@ -129,6 +129,10 @@ void decode_packet(std::span<const std::byte> packet)
 
     while (offset < packet.size())
     {
+        if (packet.size() - offset < MessageHeader::size)
+        {
+            return;
+        }
         // PARSE HEADER
 
         // TODO add and parse timestamp here.
@@ -186,7 +190,8 @@ void decode_packet(std::span<const std::byte> packet)
                     // TODO: error handle
                     return;
                 }
-                OrderExecutedFields executed_order = detail::decode_executed_order(packet.data() + offset);
+                OrderExecutedFields executed_order =
+                    detail::decode_executed_order(packet.data() + offset);
                 // TODO: market making book
                 offset += OrderExecuted::length;
                 break;
@@ -202,7 +207,8 @@ void decode_packet(std::span<const std::byte> packet)
                 // same decoder as (E): order_ref and executed_shares sit at the same offsets,
                 // and printable / execution_price are tape concerns we don't read.
                 // ONLY the length differs -- 36 vs 31. reuse the decoder, never the length.
-                OrderExecutedFields executed_order = detail::decode_executed_order(packet.data() + offset);
+                OrderExecutedFields executed_order =
+                    detail::decode_executed_order(packet.data() + offset);
                 // TODO: market making book
                 offset += OrderExecutedWithPrice::length;
                 break;
@@ -215,7 +221,8 @@ void decode_packet(std::span<const std::byte> packet)
                     // TODO: error handle
                     return;
                 }
-                OrderCancelFields cancel_order = detail::decode_cancel_order(packet.data() + offset);
+                OrderCancelFields cancel_order =
+                    detail::decode_cancel_order(packet.data() + offset);
                 // TODO: market making book
                 offset += OrderCancel::length;
                 break;
@@ -228,7 +235,8 @@ void decode_packet(std::span<const std::byte> packet)
                     // TODO: error handle
                     return;
                 }
-                OrderDeleteFields delete_order = detail::decode_delete_order(packet.data() + offset);
+                OrderDeleteFields delete_order =
+                    detail::decode_delete_order(packet.data() + offset);
                 // TODO: market making book -- remove ref.remaining from its level, erase ref
                 offset += OrderDelete::length;
                 break;
@@ -241,7 +249,8 @@ void decode_packet(std::span<const std::byte> packet)
                     // TODO: error handle
                     return;
                 }
-                OrderReplaceFields replace_order = detail::decode_replace_order(packet.data() + offset);
+                OrderReplaceFields replace_order =
+                    detail::decode_replace_order(packet.data() + offset);
                 // TODO: market making book -- this is a DELETE + ADD, not a modify.
                 // remove original_order_ref's full remaining from its old level, erase it,
                 // then insert new_order_ref at the new price. all later messages use the new ref.
