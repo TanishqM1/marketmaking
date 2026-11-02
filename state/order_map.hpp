@@ -4,13 +4,13 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace state
+namespace mm::state
 {
 
 struct OrderEntry
 {
     std::uint64_t ref;       // key
-    std::uint32_t remaining; // remaining at this level
+    std::uint32_t remaining; // this order's remaining amount.
     std::uint16_t tick;      // price (tick index)
     std::uint16_t book_id;   // stock_locate
     mm::Side      side;      // buy or sell
@@ -19,7 +19,6 @@ struct OrderEntry
 
 class OrderMap
 {
-  public:
     // this decides HOW MUCH space we allocate up front to our probe chains.
     // something cool that claude shows:
     // ─────────────┬───────────────────────┐
@@ -57,21 +56,20 @@ class OrderMap
     // - FIND(ref) -> hash as needed. if ref != what we find, linearly probe until we find it. if we
     // end up at an empty slot in the address, we know there was an error in the original ref.
     //
+  public:
     static constexpr std::size_t CAPACITY = 65536;    // 2^16 TOTAL capacity
     static constexpr std::size_t MASK = CAPACITY - 1; // (ref & mask) is GUARANTEED to be in range.
     static constexpr std::uint64_t EMPTY =
         0; // placeholder value. if we are probing and we hit this, we know to STOP probing!
-
-    // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
-    // what I got mane.
-
-    alignas(128) OrderEntry
-        slots_[CAPACITY];  // align on cache line boundaries, for the length of our CAPACITY.
-    std::size_t count_{0}; // how many are CURRENTLY used ?
-    std::size_t used_{0};  // how many have been used in TOTAL ?
-
-    void        insert(std::uint64_t ref);
+    void        insert(const OrderEntry& e);
     OrderEntry* find(std::uint64_t ref);
     void        erase(std::uint64_t ref);
+    // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
+    // what I got mane.
+  private:
+    alignas(128) OrderEntry
+        slots_[CAPACITY]{}; // align on cache line boundaries, for the length of our CAPACITY.
+    std::size_t count_{0};  // how many are CURRENTLY used ?
+    std::size_t used_{0};   // how many have been used in TOTAL ?
 };
-} // namespace state
+} // namespace mm::state

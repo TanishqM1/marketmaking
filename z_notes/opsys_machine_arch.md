@@ -295,3 +295,59 @@ So there are **two copies** on the receive path: NIC → kernel (DMA), then kern
 ### ASCII
 `'A'`=65, `'B'`=66, `'S'`=83. A character literal **is** its code — that's why `case 'B':` compares
 against 66, and why `static_cast<char>` on a byte works.
+
+### Cache lines: how they work and how to use them efficiently
+A cache is an array of **lines**. One line holds 128 contiguous bytes from memory (on this
+machine), aligned to a 128-byte boundary. **The CPU cannot fetch less than a line** — touch one
+byte and the whole aligned block comes in.
+
+Stored in SRAM on the CPU die, not in RAM:
+```
+L1d  128 KB  = 1,024 lines     ~4 cycles
+L2    16 MB  = 131,072 lines   ~12
+DRAM                           ~200-300   <- not cache; the thing cache exists to avoid
+```
+`sysctl hw.cachelinesize` → 128. Apple Silicon is **128**; x86-64 and most ARM servers are **64**,
+so most advice you read says 64.
+
+**The goal: every byte you fetch should be a byte you use.** A line that's half padding or half
+cold code wasted half the fetch.
+
+**Two separate requirements, both needed:**
+```cpp
+struct OrderEntry { ... };                     // sizeof must DIVIDE 128 (8/16/32/64/128)
+alignas(128) OrderEntry slots_[CAPACITY];      // array must START on a line boundary
+```
+Alignment fixes where the array starts; size stops individual entries from straddling. One without
+the other doesn't work:
+```
+start aligned, sizeof 24:   128/24 isn't an integer -> some entries span 2 lines
+sizeof 32, start unaligned: array begins mid-line   -> some entries span 2 lines
+both:                       4 entries per line, never straddles          ok
+```
+Reading **one** straddling entry costs **two** misses — worse than any probing concern.
+
+⚠ **`alignas` goes on the ARRAY, not the struct.**
+```cpp
+alignas(128) struct OrderEntry { ... };    // WRONG: sizeof becomes 128, 1 entry per line
+alignas(128) OrderEntry slots_[CAPACITY];  // right: entry stays 32, array is aligned
+```
+On the struct it's 4x the memory and 4x the misses.
+
+**Space wasters to avoid:**
+| | |
+|---|---|
+| bad member order | a `uint64_t` after a `uint8_t` inserts 7 bytes of padding. **Largest first.** |
+| real members that could be `static constexpr` | `std::size_t capacity_ = 65536;` costs 8 bytes **per object** for a value that never changes |
+| fields you don't read | `match_number`, `tracking_num` |
+| oversized types | `uint64_t` for something that fits in `uint16_t` |
+
+⚠ **`static constexpr` is the GOOD practice, not a waster** — it occupies **zero bytes**. The value
+is baked into the instruction stream, so `CAPACITY`/`MASK`/`EMPTY` cost nothing in memory or cache.
+
+**The one case where you WANT padding: false sharing.** Two variables written by *different
+threads* that share a line will invalidate each other's cache line on every write, even though
+neither touches the other's data. There you deliberately pad each to its own line with
+`alignas(128)`. Opposite problem, opposite fix.
+
+See also: [cpp.md](cpp.md) — struct layout, `alignof`/`sizeof` rules.
