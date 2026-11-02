@@ -330,3 +330,47 @@ fine — both params are plain `int`. (Exactly the mix-up strong types like `Pri
 kernel wakes it — 2 context switches, microseconds, and **jittery**. Busy-poll spins and never
 sleeps: burns a whole core, best tail latency. HFT always busy-polls. `receive()` returning a
 possibly-empty span is what lets us switch with one line and no change to `main.cpp`.
+
+
+### Q: is the principle that we only want the happy/hot path in the cache line?
+
+Yes. Stated precisely: **the bytes you fetch should be bytes you execute.** A cache line is 128
+bytes on this machine and the CPU can't fetch half a line — so if a line is 60% hot path and 40%
+error handling, 40% of that fetch was wasted.
+
+Cold code isn't "outside the cache" — it lives at a **far-away address**, so it never lands in the
+same line as the hot path. If the error fires you pay one miss to fetch it, for something that
+approximately never happens.
+
+**Helper flags / keywords that do this:**
+
+| | what it does |
+|---|---|
+| `[[unlikely]]` / `[[likely]]` | C++20 attributes. Move a cold **branch body** out of line, and make the hot path the fall-through (a taken branch costs a pipeline redirect; fall-through is free). The *test itself* still runs every time. |
+| `[[gnu::cold]]` | GCC/Clang. Moves a whole **function** to `.text.unlikely`, optimises it for size not speed, AND marks every branch reaching it as unlikely — so it propagates, no need to annotate each call site. |
+| `[[gnu::hot]]` | the opposite: `.text.hot`, so the linker groups hot functions contiguously. |
+| `[[gnu::noinline]]` | stop a cold function being inlined into the hot path, where it would bloat the footprint. |
+| `-ffunction-sections` + linker order file | explicit symbol ordering, fed from `perf` data. |
+| PGO / BOLT | measure what's hot, then physically reorder the binary. Beats hand annotation. |
+
+**Example** — our `receive()`:
+```cpp
+if (return_code <= 0) [[unlikely]] { return {}; }   // cold body moves away
+return {m_buffer, static_cast<std::size_t>(return_code)};  // fall-through, straight-line
+```
+
+**It applies to DATA too, not just code.** The order-ref map entry is the big one — millions of
+them, and the fields a lookup touches should fit in one line rather than spanning two. Same
+principle, L1d instead of L1i.
+
+**Gotcha — it's about density, not just size.** A 50KB hot path packed contiguously can beat a
+10KB one scattered across the binary, because the scattered version wastes most of every line it
+pulls in and touches more cache sets.
+
+**Gotcha 2 — none of this is measurable at our current scale.** The hot path is a couple hundred
+bytes against 192KB of L1i, and our `[[unlikely]]` body is literally `return {}` (two
+instructions — nothing to move). It becomes real once the book builder, strategy and risk checks
+are all in the loop, which is exactly when retrofitting would be annoying. Build the habit now,
+don't claim a win.
+
+See also: [bad_habits.md](bad_habits.md) — keeping error handling out of the hot path.

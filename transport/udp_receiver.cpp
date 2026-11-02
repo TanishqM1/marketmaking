@@ -31,6 +31,8 @@ UDP_Receiver::UDP_Receiver(std::uint16_t port)
     // this does NOT reduce latency -- it prevents DROPS. if a burst arrives while we're
     // busy decoding, packets queue here instead of being discarded.
     int receive_buffer_bytes = 2 * 1024 * 1024; // 2 MB
+    // TODO: getsockopt(SO_RCVBUF) readback -- the kernel silently clamps this (macOS:
+    // kern.ipc.maxsockbuf), so we probably don't have 2MB and currently have no way to know.
     if (::setsockopt(m_sockfd, SOL_SOCKET, SO_RCVBUF, &receive_buffer_bytes,
                      sizeof(receive_buffer_bytes)) < 0)
     {
@@ -47,6 +49,10 @@ UDP_Receiver::UDP_Receiver(std::uint16_t port)
     // (allow any NIC!)
     serverAddr.sin_addr.s_addr = INADDR_ANY;
 
+    // TODO: UNICAST ONLY. Real ITCH is multicast (one exchange send, many subscribers), and
+    // normally we would have two feeds (A/B), processing the seq_num that lands FIRST. safer and
+    // faster practice for UDP systems.
+
     // the cast is because bind() takes a generic sockaddr* -- one signature for every
     // address family (IPv4, IPv6, unix). bind copies what it needs; we don't keep this
     // struct.
@@ -59,20 +65,21 @@ UDP_Receiver::UDP_Receiver(std::uint16_t port)
 
 // recvfrom params: recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr
 // *src_addr, socklen_t *addrlen);
-std::span<const std::byte> UDP_Receiver::receive()
+std::span<const std::byte> UDP_Receiver::receive() noexcept
 {
     // call recvfrom, then return the span (packet address, size) pair.
     ssize_t return_code = recvfrom(m_sockfd, m_buffer, BUFFER_SIZE, 0, nullptr, nullptr);
-    if (return_code < 0)
+    // here, [[unlikely]] ensures the code that runs IF the error check is TRUE, is far
+    // from our cache line (to not waste space). This is because the error path is more than
+    // unlikely, so we do no want any error logging to take up cache space.
+    if (return_code <= 0) [[unlikely]]
     {
+        // empty datagram or error
         // TODO: handle errors! currently it flows through and returns an empty span.
+
+        return {};
     }
-    if (return_code > 0)
-    {
-        return {m_buffer, static_cast<std::size_t>(return_code)};
-    }
-    // empty datagram!
-    return {};
+    return {m_buffer, static_cast<std::size_t>(return_code)};
 }
 
 // destructor: RAII. releases the fd when the object goes out of scope, on every path
@@ -84,8 +91,5 @@ UDP_Receiver::~UDP_Receiver()
         ::close(m_sockfd);
     }
 }
-
-// HOT-PATH EXECUTION LOOP. finally the part that actually matters.
-// if we u
 
 } // namespace mm::transport

@@ -23,7 +23,7 @@ class UDP_Receiver
     // receiver.receive();              // warning: ignoring return value of 'receive'
     // auto pkt = receiver.receive();   // fine
     // it ensures we resolve the function call to an actual veraible, and we don't just discard it!.
-    [[nodiscard]] std::span<const std::byte> receive();
+    [[nodiscard]] std::span<const std::byte> receive() noexcept;
 
   private:
     //   outlining the constants in the file.
