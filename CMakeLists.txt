@@ -40,11 +40,12 @@ target_compile_options(mm_warnings INTERFACE
 #   Release -O2 -g -march=native       -> measure latency here, never in Debug
 # ---------------------------------------------------------------------------
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fno-omit-frame-pointer")
-# TODO: missing -DNDEBUG. CMake's default Release is "-O3 -DNDEBUG"; overriding it
-# dropped NDEBUG, so asserts stay LIVE in the build we measure latency in.
+# -DNDEBUG is what makes assert() compile to nothing. CMake's default Release is
+# "-O3 -DNDEBUG"; overriding the variable means we have to put NDEBUG back ourselves,
+# or every assert stays live in the build we measure latency in.
 # TODO: -O2 is a deliberate choice over CMake's -O3 (less aggressive inlining =
 # less I-cache pressure). Try both once there is something to measure.
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -march=native")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -march=native -DNDEBUG")
 
 option(MM_SANITIZE "ASan + UBSan in Debug builds" ON)
 
