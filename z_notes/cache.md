@@ -56,6 +56,12 @@ unlucky addresses evict each other with a tiny working set.
 cache line is tagged with *which RAM address it's a copy of* — that's what the `tag` field is.
 A lookup asks "do I have a copy of address X?" Caches have no addresses of their own.
 
+**Copies = actual bytes, not pointers.** Each line also stores a **tag** identifying which RAM
+address those bytes are a copy of — that's how the hardware answers "do I have address X?" The
+`tag` is the only pointer-like part. If a line held a pointer you'd still have to follow it to RAM
+— the ~250 cycles you were avoiding. The duplication *is* the speed, and it's also why `dirty` and
+coherence exist: three copies of one address can disagree.
+
 ```
 your code:  load from address 0x7fff5313
 hardware:   in L1?    yes -> ~4 cycles
@@ -195,12 +201,41 @@ dirty  ->  must be written out first, then the slot is reusable.
 (exclusive). **Nothing is lost** — the data is still reachable at the next level out. Caches hold
 *copies* of DRAM lines, never the only copy.
 
+**The flow: a write ALWAYS makes the line dirty, lands only in L1, and propagates outward only on
+eviction.** The new value *is* in the cache — dirty means the cache holds the authoritative value
+and memory doesn't.
+```
+write        -> lands in L1 only, marked dirty
+write again  -> L1 again, still dirty, FREE
+write again  -> L1 again, FREE
+eviction     -> NOW it propagates outward
+```
+The point is to *avoid* propagating — 100 writes, one writeback. (Write-*through* pays the slower
+level on every write. Nothing modern does that for general memory.)
+
+**On eviction it's ONE write outward either way** — only the slot handling differs:
+```
+exclusive:  L2 doesn't have it  -> ALLOCATE a new line there
+            needs a free way -> may evict something ELSE from L2, which cascades if dirty
+inclusive:  L2 has a stale copy -> OVERWRITE its data
+            the way is already ours -> no new eviction from this step, but L2's line is
+            now dirty and propagates when IT gets evicted
+```
+
 **Example** — in our code:
 ```cpp
 find(ref)                   // READ  -> line stays clean -> eviction is free
 entry->remaining -= qty;    // WRITE -> line goes dirty  -> eviction costs a writeback to L2
 bid_qty[tick]    -= qty;    // WRITE -> same
 ```
+Nearly free after the lookup: `find` already pulled the line into L1, so the write just lands
+there. You pay the ~200-cycle miss once to *get* the line; everything you do to it afterwards is
+L1-speed until eviction.
+
+⚠ **Writes can miss too — write-allocate.** Writing to an address that isn't cached *loads the line
+first*, then applies the write. So touching a cold price level costs a read before the update,
+which is why `top_n` near the touch is cheap (lines already hot) and jumping to a distant price
+isn't.
 Not worth engineering around (~12 cycles, amortised), but it's why a read-mostly structure is
 cheaper cache-wise than a write-heavy one.
 
