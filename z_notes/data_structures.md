@@ -109,3 +109,71 @@ So keep load ≤ 0.5 to stay inside one line. Not because 1.5 probes is "fast en
 ⚠ **If `used_` ever reaches CAPACITY there is no EMPTY slot to stop at, and `find()` on an absent
 ref loops forever** — an infinite loop in the hot path. Assert `used_ < CAPACITY` on insert, and
 bound the probe count in release with a counter on the give-up path.
+
+### "Probe" = one slot examined
+```
+1 probe  -> the home slot held our ref
+2 probes -> home slot was someone else's, the next slot was ours
+```
+"1.5 probes average" means usually one slot, sometimes two.
+
+### Where in the cache line your home slot lands
+`ref & MASK` gives any slot uniformly, so with 4 slots per 128-byte line only **1 in 4** home slots
+sits at a line start:
+```
+slot:  0    1    2    3  │  4    5    6    7  │  8 ...
+       ^start                ^start               ^start
+```
+Home slot 6 is third in its line — probing 7 is free, probing 8 **crosses into a new line**.
+
+Combined with load factor: at 0.5, about half of lookups hit the home slot with no probe at all. So
+the unlucky case is roughly `0.5 × 0.25` ≈ **12% of lookups cross a line.**
+
+**Bucketizing is the guaranteed fix** — round the home index down to the line start and probe only
+within the group:
+```
+idx    = ref & MASK
+bucket = idx & ~3          // multiple of 4
+probe bucket, bucket+1, bucket+2, bucket+3     one cache line, ALWAYS
+then the next bucket
+```
+Cost: entries are more constrained (slightly worse clustering), and a full bucket needs an overflow
+path — which spends the second line you were saving.
+
+### What industry actually uses
+Group-based layouts **plus SIMD metadata**, which is bucketizing with a trick:
+| | |
+|---|---|
+| abseil `flat_hash_map` (Google, "Swiss tables") | groups of 16 slots |
+| folly `F14` (Meta) | 14-slot chunks |
+| boost `unordered_flat_map` | group-based |
+
+The trick: a **separate array of 1-byte control values**, one per slot — 7 bits of hash + 1 bit for
+empty/deleted. Probing a group loads 16 control bytes into a SIMD register and compares all 16
+against your hash fragment in **one instruction**; only matches get a full key comparison. 16 slots
+examined in ~2 instructions. The control array is 1 byte/slot vs 32, so a group's metadata is 16
+bytes and co-resides in cache easily.
+
+> For an HFT order map specifically, plain linear probing with a carefully sized table is also
+> common — **predictability matters more than average speed when you care about p99.9.** Build the
+> simple version first; it's what you'd validate a SIMD version against.
+
+### Memory is never freed
+The array is allocated **once at startup** and never grows, shrinks, or frees. Erasing an order
+just changes its slot's `state` field:
+```
+EMPTY       never used        -> probing STOPS
+OCCUPIED    live order
+TOMBSTONE   erased, reusable  -> probing CONTINUES
+```
+(Backward-shift deletion removes the need for TOMBSTONE entirely — just EMPTY/OCCUPIED.)
+
+⚠ **Insert can't stop at the first reusable slot** or it creates a duplicate of a ref already
+living further down the chain:
+```
+walk the probe path looking for the ref
+  remember the FIRST reusable slot passed
+  found the ref  -> overwrite it
+  hit EMPTY      -> not present, write to the remembered slot
+```
+Get it wrong and `erase` removes one copy while `find` keeps returning the stale other.

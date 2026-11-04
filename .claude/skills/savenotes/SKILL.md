@@ -63,7 +63,9 @@ Route by topic:
 | File | Covers |
 |---|---|
 | `z_notes/cpp.md` | the C++ language — types, structs, alignment, keywords, stdlib |
-| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, memory, cache, registers, network stack |
+| `z_notes/cache.md` | caches — line/way/set, hierarchy, inclusion policy, clean/dirty, alignment, working set, CAT |
+| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, registers/ISA, network receive path |
+| `z_notes/data_structures.md` | algorithms & containers — hashing, probing, layout choices |
 | `z_notes/inbound_outbound_data.md` | wire formats — ITCH, SBE, offsets, byte order, framing, parse loop |
 | `z_notes/market_structure.md` | how markets work — books, matching, message semantics |
 | `z_notes/build_toolchain.md` | compiling, linking, CMake, flags, sanitizers |

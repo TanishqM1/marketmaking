@@ -33,7 +33,7 @@ wrote `test/state/test_order_map.cpp` (12 runtime tests + 6 layout assertions). 
   read says 64.
 - **Two separate requirements for cache efficiency: `sizeof` must divide 128, AND the array must be
   128-aligned.** One without the other still straddles, and reading one straddling entry costs two
-  misses. See [opsys_machine_arch.md](opsys_machine_arch.md).
+  misses. See [cache.md](cache.md).
 - **The latency cliff is the cache line, not the probe count.** 4 entries/line, so probes 1-4 are
   free and probe 5 doubles the cost. That's why load factor ≤ 0.5, not because 1.5 probes is "fast
   enough."
@@ -155,7 +155,7 @@ dispatch loop with the Add Order path bounds-checked and advancing. Also `types/
 
 - **Kernel and userspace are separated by hardware** — privilege rings plus page permissions. A
   packet DMAs into kernel memory, queues on your socket, and `recvfrom` copies it out: **two
-  copies**. See [opsys_machine_arch.md](opsys_machine_arch.md).
+  copies**. See [cache.md](cache.md).
 - **A syscall is a privilege transition, ~100ns–1µs**, usually the dominant cost in a receive
   loop. Hence batching, `recvmmsg`, and kernel bypass.
 - **UDP is message-oriented**: one `recvfrom` = exactly one complete datagram, never partial. No
