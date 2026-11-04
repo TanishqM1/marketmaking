@@ -54,6 +54,11 @@ Rules:
   reasoning stripped out is a failed entry — the "why" is the part worth re-reading.
 - **Only what was discussed.** Never invent. If something is uncertain, write it with
   `> ⚠️ verify this`.
+- **Frame it as a tier-1 HFT firm's choice, not just a mechanism.** The user wants to know how a
+  concept maps to *industry practice*: what firms engineer, what they measure, what they accept,
+  what they'd never ship, and which hardware/OS features they rely on. Explain the mechanism only
+  as far as it justifies the choice. An entry that defines a term without saying what a firm does
+  about it is half an entry.
 - Cross-link when relevant: `See also: [cpp.md](cpp.md) — struct padding`.
 
 ## Where the entry goes
@@ -63,8 +68,11 @@ Route by topic:
 | File | Covers |
 |---|---|
 | `z_notes/cpp.md` | the C++ language — types, structs, alignment, keywords, stdlib |
-| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, memory, cache, registers, network stack |
+| `z_notes/cache.md` | caches — line/way/set, hierarchy, inclusion policy, clean/dirty, alignment, working set, CAT |
+| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, registers/ISA, network receive path |
+| `z_notes/data_structures.md` | algorithms & containers — hashing, probing, layout choices |
 | `z_notes/inbound_outbound_data.md` | wire formats — ITCH, SBE, offsets, byte order, framing, parse loop |
+| `z_notes/hft_systems.md` | firm-level systems — cores, sharding, parallelism, NUMA, operational setup, FPGA |
 | `z_notes/market_structure.md` | how markets work — books, matching, message semantics |
 | `z_notes/build_toolchain.md` | compiling, linking, CMake, flags, sanitizers |
 | `z_notes/bad_habits.md` | things not to do here. **Rules list, not FAQ — leave its style alone.** |

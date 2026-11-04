@@ -1,170 +1,153 @@
-Inbound market data = ITCH. Outbound orders = SBE. Real venues are asymmetric like this
+# Inbound / Outbound Data
+
+Inbound market data = **ITCH**. Outbound orders = **SBE**. Real venues are asymmetric like this
 (Nasdaq is ITCH in, OUCH out).
 
-ITCH is big-endian, packed with no padding, message type is byte 0, and lengths are fixed per
-type. SBE is little-endian, type is the templateId in the header, length is in the header.
+| | ITCH (in) | SBE (out) |
+|---|---|---|
+| endianness | **big**, byteswap every field | little |
+| packing | packed, no padding | we control it, can align |
+| message type | byte 0, a char | `templateId` in the header |
+| length | fixed per type (lookup table) | `blockLength` in the header |
 
-
-Phase 1)
-1. primitive types `types/` (Price, Qty, OrderRef, Side, Timestamp)
-2. offset constants `codec/itch.hpp`
-3. encoder + decoder for Add Order `codec/itch.cpp`
-4. round trip test, encode -> decode -> compare `test/codec/`
-5. repeat for the other 5
-6. dispatch loop, read byte 0 -> switch -> decoder
-
-We need an encoder even though ITCH is inbound, because the mock exchange has to publish data,
-and it's how we make test fixtures.
-
-Not doing yet: MoldUDP64, sockets, any SBE.
-
-
-Don't cast a struct onto the buffer. ITCH is packed and big-endian so no struct matches the
-wire, and casting is misaligned + UB. Use constexpr offsets, memcpy into a local, then byteswap.
-A fixed size memcpy is one load so it's the same speed. Offsets go in codec/ not types/, since
-they're wire knowledge.
-
-
-These are the messages. Every one starts with the same 11 bytes:
-
+### Message layouts
+Every ITCH message starts with the same 11 bytes:
 ```
 0   msg type        1 (char)
-1   stock locate    2       <- symbol id
-3   tracking num    2
-5   timestamp       6       <- ns since midnight
+1   stock locate    2       <- symbol id, on EVERY message
+3   tracking num    2       <- Nasdaq-internal, never read it
+5   timestamp       6       <- ns since MIDNIGHT (not epoch)
 ```
-
-The actual "AAPL" string only shows up on Add Order. Everything else references the order ref.
+The `"AAPL"` string appears only on Add Order; everything else references the order ref.
 
 ```
-A - Add Order (36 bytes)
-11  order_ref       8
-19  buy_sell        1 (B/S)
-20  shares          4
-24  stock           8 (char)
-32  price           4       <- 4 implied decimals, 175.2500 = 1752500
+A - Add Order (36)
+11  order_ref        8
+19  buy_sell         1 (B/S)
+20  shares           4
+24  stock            8 (char)
+32  price            4       <- 4 implied decimals: 175.2500 = 1752500
 
-E - Order Executed (31 bytes)
-11  order_ref       8
-19  executed_shares 4
-23  match_number    8
-        no price field. the trade was at the resting order's price, which we already have.
+F - Add Order with MPID (40) = A + 4-byte MPID at 36. All of A's offsets apply.
+    Skipping the MPID, but it IS an add — not handling it loses orders.
 
-C - Order Executed With Price (36 bytes)
-11  order_ref       8
-19  executed_shares 4
-23  match_number    8
-31  printable       1
-32  execution_price 4
-        execution_price is just trade reporting. still decrement the level from our map.
+E - Order Executed (31)
+11  order_ref        8
+19  executed_shares  4
+23  match_number     8      <- trade reporting only
+    No price field: the trade was at the resting order's price, which the map has.
 
-X - Order Cancel (23 bytes)
-11  order_ref       8
+C - Order Executed With Price (36)
+11/19/23 same as E
+31  printable        1      <- "count this in trade stats?"  tape concern
+32  execution_price  4      <- trade reporting. Still decrement the level per the map.
+    Same fields we read as E, same offsets. ONLY the length differs (36 vs 31).
+    Reuse the decoder, never the length.
+
+X - Order Cancel (23)
+11  order_ref        8
 19  cancelled_shares 4
 
-D - Order Delete (19 bytes)
-11  order_ref       8
-        no qty field at all, which is why we need the order map.
+D - Order Delete (19)
+11  order_ref        8
+    No qty field at all — which is why the order map is mandatory.
 
-U - Order Replace (35 bytes)
+U - Order Replace (35)
 11  original order_ref  8
 19  new order_ref       8
 27  shares              4
 31  price               4
-        its own message, not a version of X or D. it's a delete + add, and all future
-        messages use the new ref.
+    Its own message, not a variant of X/D. A delete + add, and all future
+    messages use the NEW ref.
 ```
 
-F is Add Order + a 4 byte MPID at offset 36 (40 total). Skipping it, we don't care about MPID.
+⚠ Verify every offset against the official Nasdaq TotalView-ITCH 5.0 spec.
 
-Verify all these offsets against the Nasdaq TotalView-ITCH 5.0 spec before coding.
-
+### Why not cast a struct onto the buffer
+ITCH is packed and big-endian, so no struct matches the wire, and casting is misaligned → UB.
+Use `constexpr` offsets, `memcpy` into a local, then byteswap. A fixed-size `memcpy` is one load,
+so it's the same speed. Offsets live in `codec/`, not `types/` — they're wire knowledge.
 
 Two annoying parts:
-- byteswap every multi-byte field on read (std::byteswap in <bit>, or __builtin_bswap64). Swap
-  once at decode, then everything internal is little-endian.
-- the 6 byte timestamp. There's no 6 byte int, and reading 8 bytes overruns the message. memcpy
-  6 bytes into a zeroed uint64 then swap. Get this one working by itself first.
+- **Byteswap every multi-byte field** (`std::byteswap` in `<bit>`). Swap once at decode; everything
+  internal is little-endian after that. **Never byteswap text** — `"AAPL    "` becomes `"    LPAA"`.
+- **The 6-byte timestamp.** No 6-byte int exists, and reading 8 overruns the message. Assemble with
+  explicit shifts (big-endian, MSB first) — no endianness assumption, no UB:
+  ```cpp
+  (uint64_t(p[0])<<40)|(uint64_t(p[1])<<32)|(uint64_t(p[2])<<24)
+  |(uint64_t(p[3])<<16)|(uint64_t(p[4])<<8)|uint64_t(p[5]);
+  ```
+  The `uint64_t(...)` casts are load-bearing — shifting a 32-bit `int` by 40 is UB.
+  6 bytes because 2⁴⁸ ≈ 2.8e14 fits a day in ns (8.64e13); 5 bytes covers only ~18 min.
 
-
-What our book actually needs: shares at each price, bids descending and asks ascending. No
-fills, no time priority, no per-order queues, no MPID.
-
-But ITCH is order-based, so price levels don't exist on the wire, we build them. E C X D U only
-give us an order ref (no price/side/symbol), so state/ needs order_ref -> {side, price,
-remaining}. Every message except A starts by looking in it. We don't match orders, but we do
-track every live one.
-
-```
-A       insert ref, level[price] += shares
-E/C     level[price] -= executed, decrement remaining, erase if 0
-X       level[price] -= cancelled, decrement remaining, erase if 0
-D       level[price] -= ref.remaining, erase ref
-U       subtract old remaining from old level, erase, insert new ref at new price
-```
-
-Partial fills are normal so decrement, don't delete.
-
-The book never crosses. The exchange matches internally and just tells us what already happened.
-An order that executes instantly never gets an A because it never rested, we just see the E
-against the resting order, then an A for whatever's left over.
-
-So if best bid >= best ask, that's our bug or a dropped packet. Never real.
-
-
-One datagram = many messages packed back to back, no padding. The venue batches them (~42 bytes
-of eth/ip/udp overhead per packet, and syscalls are the dominant cost in a receive loop) so we
-get ~1400 bytes and decode ~40 messages per recvfrom.
-
+### The parse loop
+One datagram = **many messages** packed back to back, no padding. The venue batches (~42 bytes of
+eth/ip/udp overhead per packet, and syscalls dominate a receive loop), so ~1400 bytes and ~40
+messages per `recvfrom`.
 ```
 offset:   0        36       67       90      109      144
          'A'      'E'      'X'      'D'      'U'
-          |--36----|--31----|--23----|--19----|--35----|
-len = 144
+          |--36----|--31----|--23----|--19----|--35----|    len = 144
+```
+Each message is self-identifying: type is at `buf[offset]`, not just `buf[0]`. Nothing says how
+many are in there — you discover it by walking.
+
+Read `buf[offset]` → switch → memcpy+byteswap from known offsets → advance by that type's length →
+repeat. Lengths A=36 F=40 E=31 C=36 X=23 D=19 U=35, fixed per type, so no length prefix is needed
+to parse.
+
+Two different numbers, don't mix them:
+```
+len - offset        bytes left in the buffer  -> bounds check: does this msg fit?
+length_for(type)    this message's size       -> how far to advance
 ```
 
-Each message is self-identifying, type is at buf[offset] not just buf[0]. Nothing tells us how
-many are in there, we discover it by walking.
+**Bounds check before every decode:** `if (msglen > len - offset) bail`. Written that way rather
+than `offset + msglen > len` it can't overflow. Skip it and a truncated datagram reads past the
+end. Also check the **header** (11 bytes) before reading the type's neighbours.
 
-Parse loop: read buf[offset], switch to the right decoder, memcpy + byteswap from the known
-offsets, advance by that type's length, repeat. Lengths A=36 E=31 C=36 X=23 D=19 U=35, fixed per
-type, so no length prefix needed to parse.
+**Loop should end at `offset == len` exactly.** Anything else means truncation or a wrong length
+constant — and a bad constant lands you mid-message, you read a payload byte as a type, and
+everything after decodes to garbage. One wrong number desyncs the rest of the datagram.
 
-Two different numbers, don't mix them up:
+⚠ Unknown type → unknown length → **you cannot find the next message.** `default:` must `return`,
+or you re-read the same byte forever. A real feed opens the day with System Event (`'S'`), so this
+hangs on message one. Needs a length table over all ~20 types to skip properly.
+
+### Our buffer
+One fixed 64 KB array, allocated at startup, overwritten every read. UDP is message-oriented so one
+`recvfrom` = exactly one complete datagram — no ring buffer, no accumulation. Undersizing silently
+truncates; 64 KB costs nothing (max payload is 65507). Anything pointing into it dies on the next
+`recvfrom`, so decode fully, apply to the book, then read again.
+
+### SBE (outbound, later)
+8-byte header, always first:
 ```
-len - offset        bytes left in the buffer   -> bounds check, does this msg fit
-length_for(type)    this message's size        -> how far to advance
+0-1  blockLength   length of the PAYLOAD (not the total)
+2-3  templateId    which message this is  <- SBE's name for "message type"
+4-5  schemaId      sanity check (from the schema's id= attribute)
+6-7  version       schema revision
+8+   payload
 ```
+Next message = `current + 8 + blockLength`.
 
-Bounds check before every decode: `remaining = len - offset; if (msglen > remaining) bail`.
-Written that way rather than `offset + msglen > len` it can't overflow. Skip it and a truncated
-datagram memcpy's past the end of the buffer = heap overread + UB.
+`blockLength` exists so you can skip a message you don't understand and stay in sync, and so fields
+can be appended without breaking old readers.
 
-Loop should end at `offset == len` exactly. `offset > len`, or leftover bytes smaller than one
-message, means truncation or a wrong length constant. Worth asserting, because a bad constant
-lands us mid-message, we read a random byte as a type, and everything after it decodes to
-garbage. One wrong number desyncs the whole rest of the datagram.
+- **templateId is read, never picked**, on the decode side — it's already in the bytes at a fixed
+  offset. The encoder writes it; the decoder reads it.
+- Keep templateIds **dense and small** (1,2,3…) so the compiler emits a jump table.
+- ⚠ Don't shrink the header to 6 bytes: the payload would start at offset 6, misaligning an 8-byte
+  first field, and you'd pad back to 8 anyway.
 
-Buffer itself: one fixed 64KB array, allocated at startup, overwritten every read. UDP is
-message-oriented so one recvfrom = exactly one complete datagram, never a partial, so no ring
-buffer and no accumulation logic. Undersizing it silently truncates (MSG_TRUNC detects it), and
-64KB costs nothing, so just use the max. Anything pointing into the buffer dies on the next
-recvfrom, so decode fully, apply to the book, then read again.
-
-(TCP is a byte stream with no message boundaries, so the order entry side will need
-accumulation. Different problem, later.)
-
-
-Folders:
-    types/          Price, Qty, OrderRef, Side. no wire knowledge, compiles on its own
-    codec/itch.*    offsets, encoder, decoder. all the wire knowledge
-    codec/schema/   SBE schema, later
-    state/          order map + price levels, the actual market state
-    transport/      sockets, MoldUDP64, later
-    session/        seq numbers, gap detection, later
-    test/codec/     round trip tests
-
-types/ is just the vocabulary, state/ is the actual book, codec/ is anything that parses or
-serializes.
-
-
+### Folders
+```
+types/        Price, Qty, OrderRef, Side — no wire knowledge, compiles alone
+codec/itch.*  offsets, encoder, decoder — all the wire knowledge
+codec/schema/ SBE schema, later
+state/        order map + price levels — the actual market state
+transport/    sockets, MoldUDP64, later
+session/      seq numbers, gap detection, later
+test/codec/   round trip + hand-written-hex tests
+```
+`types/` is vocabulary, `state/` is the book, `codec/` is anything that parses or serializes.

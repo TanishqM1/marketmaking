@@ -1,14 +1,27 @@
-- we should not use `new`, `delete`, `std::make_unique` because dynamically requesting memory is slow. we should pre-allocate it ALL at runtime.
+# Bad Habits
 
-- we should NOT use `throw` or `try-catch` blocks, because thrown exceptions generate too much bloat code, and force the CPU to disassemble the stack.
-Instead, we use error codes, status enums, or `std::expected` (we can return std::unexpected, and then check if(return_var)).
+- **No `new` / `delete` / `std::make_unique` on the hot path.** Dynamic allocation is slow.
+  Pre-allocate everything at startup.
 
-- We should not use `std::list` or `std::map` because the variable storage in memory is scattered across the heap. We should use `std::vector` or flat arrays, 
-because they are stored contigously.
+- **No `throw` / `try-catch` on the hot path.** Exceptions bloat code and force stack unwinding.
+  Use error codes, status enums, or `std::expected` (return `std::unexpected`, check the result).
+  Startup is the exception — a failed bind *should* throw.
 
-- We should not let rarely-taken code (error handling, logging, gap recovery) get inlined into the hot path, because it runs
-almost never but takes up L1i instruction cache footprint in the hot loop forever, evicting the code that does run. Mark it
-`[[gnu::noinline]]` and `[[gnu::cold]]`, and use `[[unlikely]]` on the branch so the compiler lays the cold side out-of-line.
-Write error paths as separate functions from the start — it costs nothing and is annoying to retrofit once the bail logic is
-tangled into the loop.
+- **No `std::list` / `std::map` / `std::unordered_map`.** Storage is scattered across the heap, so
+  every access is a pointer chase. Use `std::vector` or flat arrays — contiguous.
 
+- **No rarely-taken code inlined into the hot path** (error handling, logging, gap recovery). It
+  runs almost never but occupies L1i footprint forever, evicting code that does run. Mark it
+  `[[gnu::cold]]` (which propagates — it marks every branch reaching it unlikely) and
+  `[[gnu::noinline]]`, with `[[unlikely]]` on the branch. Write error paths as separate functions
+  from the start; retrofitting once the bail logic is tangled into the loop is painful.
+
+- **Never format a log string on the hot path.** `snprintf` is microseconds and a lot of code.
+  Increment a counter or push a fixed-size binary record to a ring buffer; format elsewhere.
+
+- **No float prices, ever.** Scaled integers or tick counts. Floats break equality (`0.1+0.2 !=
+  0.3`), and equality is the whole job of a book.
+
+- **No bare typedefs for domain types.** `using Price = int64_t` gives zero safety — it's an alias,
+  so `Price` and `Qty` are the same type and transposing them compiles silently. Use a one-field
+  struct: distinct type, identical codegen.

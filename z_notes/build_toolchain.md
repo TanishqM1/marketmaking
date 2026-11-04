@@ -1,41 +1,51 @@
 # Build & Toolchain
 
-### Q: what is a TU?
+### TU (translation unit)
+One `.cpp` plus everything it `#include`s — the chunk the compiler compiles at a time,
+**completely alone**. Building `main.cpp`, it has never seen `udp_receiver.cpp`.
 
-**TU = translation unit** = one `.cpp` plus everything it `#include`s. It's the chunk the compiler
-compiles at a time, **completely alone** — when building `main.cpp` it has never seen
-`udp_receiver.cpp`.
-
-```
-udp_receiver.cpp  ->  udp_receiver.cpp.o    compiled in isolation
-main.cpp          ->  main.cpp.o            compiled in isolation
-                           |
-                      linker joins them
-```
-
-A **"TU boundary"** is the line between two separately-compiled files. It's where the compiler
-loses visibility, which is why:
-- headers exist at all (declarations so one TU can reference another's functions)
+A **"TU boundary"** is the line between two separately-compiled files, and it's where the compiler
+loses visibility. Which is why:
+- headers exist (declarations so one TU can reference another's functions)
 - a function defined in a `.cpp` **cannot be inlined** into a different TU
-- `inline` is needed for a definition in a header (it may then appear in many TUs legally)
+- `inline` is needed for a header definition (it may then legally appear in many TUs)
 - an anonymous namespace makes something private to one TU
 
-**Example:** our loop pays for a TU boundary twice per packet —
+Our loop pays for a boundary twice per packet:
 ```cpp
-auto packet = receiver.receive();    // in libmm_transport.a -> opaque call
+auto packet = receiver.receive();    // libmm_transport.a -> opaque call
 if (packet.empty()) continue;        // re-tests what receive() already decided
-mm::itch::decode_packet(packet);     // in libmm_codec.a -> opaque call
+mm::itch::decode_packet(packet);     // libmm_codec.a -> opaque call
 ```
-`receive()` already returned an empty span for the bad cases, but `main` can't see that, so the
-same test runs twice.
 
-**Gotcha:** **LTO (Link Time Optimization)** is the fix. Each `.o` stores a half-compiled
-intermediate form instead of finished machine code, and the optimiser gets handed all of them at
-**link** time — so it can finally inline across files. CMake:
+### LTO (Link Time Optimization)
+The fix. Each `.o` stores a half-compiled intermediate form instead of finished machine code, and
+the optimiser gets all of them at **link** time — so it can inline across files.
 ```cmake
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ok)
 set_property(TARGET trading_system mm_transport mm_codec
-             PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)   # Release only
+             PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 ```
-Release only: it makes builds much slower and debugging harder. It does **not** weaken our
-layering — LTO merges at code-generation time, so the source files, headers and CMake dependency
-graph are untouched.
+Release only (`_RELEASE` suffix) — it makes builds much slower and debugging harder. Verify with
+`ninja -C build-release -t commands | grep flto`.
+
+Does **not** weaken layering: LTO merges at code generation, so source files, headers and the CMake
+dependency graph are untouched.
+
+### `-DNDEBUG`
+What makes `assert()` compile to nothing. CMake's default Release is `-O3 -DNDEBUG`; overriding
+`CMAKE_CXX_FLAGS_RELEASE` means you must put `NDEBUG` back yourself, or every assert stays live in
+the build you measure latency in.
+
+### Builds
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug     # -O0 -g + sanitizers
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release   # -O2 -g -march=native -DNDEBUG
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+Separate directories so both coexist. **Latency numbers only from Release.**
+
+macOS: LeakSanitizer is unsupported on arm64 — use `leaks --atExit -- ./binary`. If an ASan run
+hangs, try `ASAN_OPTIONS=symbolize=0`.

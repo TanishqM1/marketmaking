@@ -5,6 +5,106 @@ Written by `/changelog <date>`.
 
 ---
 
+## 2026-11-01 — Sun Nov 1, 2026
+
+**Built:** `transport/udp_receiver.{hpp,cpp}` (socket, bind, `SO_RCVBUF`, `receive()` returning a
+span) and `app/main.cpp`'s loop — the full ingestion path now runs end to end. Added `mm_transport`
++ `trading_system` CMake targets, LTO in Release, and `-DNDEBUG`. Started `state/order_map.hpp`;
+wrote `test/state/test_order_map.cpp` (12 runtime tests + 6 layout assertions). Trimmed all notes
+1221 → ~975 lines.
+
+### C++
+- **`noexcept` removes a landing pad, not just documentation.** If a function might throw the
+  caller emits stack-unwinding machinery and the optimiser can't reorder across the call — and
+  across a TU boundary the compiler must *assume* it might. See [cpp.md](cpp.md).
+- **`explicit` blocks implicit conversion, which matters most when the constructor has side
+  effects.** `UDP_Receiver r = 8080;` compiles without it, silently opening a socket.
+- **`alignas` goes on the ARRAY, not the struct.** On the struct, `sizeof(OrderEntry)` becomes 128
+  — 4× the memory and 1 entry per cache line instead of 4.
+- **`static constexpr` members occupy zero bytes.** They're baked into the instruction stream, so
+  `CAPACITY`/`MASK`/`EMPTY` cost nothing. A real member instead would waste 8 bytes per object.
+- **Header-only vs `.cpp` is a size decision, not a style one.** `OrderMap::find` is tiny and
+  per-message → header. `Book::add` is bigger → `.cpp`, and LTO can still inline it.
+
+### Machine & OS
+- **`&` is bitwise AND, and `ref & (CAPACITY-1)` *is* modulo for powers of two.** Keeps the low N
+  bits. One instruction vs ~20-40 cycles for division — the whole reason CAPACITY must be 2ⁿ.
+- **Cache line is 128 bytes here, 64 on x86.** `sysctl hw.cachelinesize` confirms. Most advice you
+  read says 64.
+- **Two separate requirements for cache efficiency: `sizeof` must divide 128, AND the array must be
+  128-aligned.** One without the other still straddles, and reading one straddling entry costs two
+  misses. See [cache.md](cache.md).
+- **The latency cliff is the cache line, not the probe count.** 4 entries/line, so probes 1-4 are
+  free and probe 5 doubles the cost. That's why load factor ≤ 0.5, not because 1.5 probes is "fast
+  enough."
+- **A TU boundary costs two opaque calls per packet, plus a duplicated test.** `main` re-checks
+  `packet.empty()` on a value `receive()` already decided, because it can't see inside. LTO fixes
+  it; verified `-flto=thin` on the Release link line.
+- **The three HFT tricks are one idea.** Kernel bypass, ring buffers, and flat maps all trade
+  generality for knowing something specific about the data. The question is "what do I know that
+  `std::unordered_map` isn't allowed to assume?"
+
+### Wire format
+- **`recvfrom` returns only an `ssize_t`** — the byte count. Data arrives as a side effect. `n == 0`
+  is a valid empty datagram, not EOF.
+- **`flags` takes `MSG_*`, not `IPPROTO_*`.** `IPPROTO_UDP` is 17, so passing it silently sets two
+  arbitrary MSG bits. Compiles fine — both params are plain `int`.
+- **`MSG_DONTWAIT` is 128 on macOS, 64 on Linux.** Never hardcode the number.
+- **Blocking vs busy-poll is one constant, because `receive()` returns a possibly-empty span.**
+  Blocking sleeps the thread (2 context switches, jittery); busy-poll never sleeps.
+
+### Data structures
+- **An open-addressing hash map *is* a flat array.** "Not a hashmap" meant "not
+  `std::unordered_map`" — the array is storage, the hash is just how you compute the index.
+- **Linear probing wins despite worse theory.** Quadratic/double hashing scatter, so every probe is
+  a fresh DRAM miss; linear's cluster is in the line you already paid for.
+- **Order refs are roughly sequential, so their low bits are well distributed** — `ref & MASK` needs
+  no hash function at all.
+- **The key must be stored in each slot.** Without it you can't tell "mine" from "someone else's
+  who collided here." 8 of the entry's bytes go to the key.
+- **A tombstone is writable but not terminating.** Erasing to `EMPTY` breaks the probe chain for
+  entries further along — they become unfindable. See
+  [data_structures.md](data_structures.md).
+- **ONE global order map, not one per symbol.** When an `E` arrives you have only the ref, so you
+  couldn't pick which per-symbol map to search. The map is what *tells* you the symbol.
+- **Backward-shift deletion beats tombstones for high churn.** Tombstones force a mid-session
+  rehash, which contradicts "never rehash mid-session."
+
+### Market structure
+- **Position comes from the map; quantity comes from the message — except for `D` and `U`.**
+  `E`/`C`/`X` carry a quantity; `D` carries nothing but a ref, so the amount comes from
+  `remaining`. (Correcting an earlier over-generalisation of mine.)
+- **`find` returning null is normal, not an error.** Start of day, after a gap, or an
+  already-erased order — hundreds of times each morning.
+
+### Bugs I hit
+- **`slots_` declared without `{}` — silent, and would destroy everything.** Indeterminate bytes
+  mean garbage refs, so `find()` matches at random or probes forever. Nobody catches it.
+- **`sizeof(OrderEntry)` is 24, not 32 — caught by `static_assert`.** 128/24 isn't an integer so
+  entries straddle lines. The assert turned it into a build failure instead of a mystery.
+- **`class UDP_Receiver {}` written in *both* the header and the `.cpp` — loud at link.** That
+  creates two unrelated classes sharing a name; the header's declarations had no definitions.
+  The `.cpp` needs `UDP_Receiver::` prefixes and no `class` keyword.
+- **Public data members in `OrderMap` — silent.** Any caller could corrupt the table and break
+  every probe chain. The invariants only hold if `insert`/`find`/`erase` are the sole mutators.
+- **I dropped `-DNDEBUG` when overriding `CMAKE_CXX_FLAGS_RELEASE`** — so every assert would have
+  stayed live in the build used to measure latency. Found by code review, not by me.
+- **Pasted LLM code with confidently wrong comments.** "recvfrom extracts bytes directly out of the
+  NIC ring buffer", "`__builtin_expect` tells the CPU", "zero-copy handoff" — all wrong, all
+  plausible-sounding. Also contained two real bugs: `continue` on error (spins at 100% CPU) and a
+  hoisted `addrLen` that `recvfrom` writes to.
+
+### Still open
+- **`sizeof(OrderEntry)` padding to 32** — the `static_assert` is failing; one `pad[14]` away from
+  the tests compiling. Then undefined symbols for `insert`/`find`/`erase` become the todo list.
+- **`OrderMap` implementation** — and the erase strategy decision (tombstones vs backward-shift).
+- **Issues filed:** #10 kernel-bypass research, #11 busy-polling + benchmark, #12 latency profiling,
+  #13 error contract, #14 `length_for()` + the `default:` hang, #15 multicast + A/B feeds, #16
+  inlining/alignment/dead code.
+- **⚠ `default:` in `decode_packet` still doesn't advance `offset`** — a real ITCH feed opens with
+  System Event (`'S'`), so it hangs on message one. Accepted for now since the mock exchange only
+  emits our 7 types.
+
 ## 2026-10-29 — Thu Oct 29, 2026
 
 **Built:** `codec/itch.hpp` + `codec/itch.cpp` — all six ITCH offset structs, `MsgType` enum,
@@ -55,7 +155,7 @@ dispatch loop with the Add Order path bounds-checked and advancing. Also `types/
 
 - **Kernel and userspace are separated by hardware** — privilege rings plus page permissions. A
   packet DMAs into kernel memory, queues on your socket, and `recvfrom` copies it out: **two
-  copies**. See [opsys_machine_arch.md](opsys_machine_arch.md).
+  copies**. See [cache.md](cache.md).
 - **A syscall is a privilege transition, ~100ns–1µs**, usually the dominant cost in a receive
   loop. Hence batching, `recvmmsg`, and kernel bypass.
 - **UDP is message-oriented**: one `recvfrom` = exactly one complete datagram, never partial. No
