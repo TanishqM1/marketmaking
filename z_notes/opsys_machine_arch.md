@@ -351,3 +351,17 @@ neither touches the other's data. There you deliberately pad each to its own lin
 `alignas(128)`. Opposite problem, opposite fix.
 
 See also: [cpp.md](cpp.md) — struct layout, `alignof`/`sizeof` rules.
+
+### The three HFT tricks are all the same idea
+| | the standard way | what we do | what changed |
+|---|---|---|---|
+| **kernel bypass** | syscall + copy through the stack | NIC DMAs into our memory, we poll | removed a layer of indirection |
+| **ring buffer** | allocate per message | fixed slots, reused | removed allocation |
+| **flat map** | buckets of linked nodes | one array, index arithmetic | removed pointer chasing |
+
+Each one trades generality for **knowing something specific about our data**: that packets are
+fixed-size and transient, that order refs are sequential, that prices are dense ticks. The
+general-purpose version can't assume any of that, so it pays for flexibility we don't need.
+
+**The question to ask, then, isn't "what's the fast data structure?" — it's "what do I know about
+my data that `std::unordered_map` isn't allowed to assume?"**
