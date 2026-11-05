@@ -7,6 +7,15 @@
 namespace mm::state
 {
 
+// must be above the struct that uses it..
+enum class slotState : std::uint8_t
+{
+    // 0/1/2
+    EMPTY,
+    OCCUPIED,
+    TOMBSTONE
+};
+
 struct OrderEntry
 {
     std::uint64_t ref;       // key
@@ -14,7 +23,8 @@ struct OrderEntry
     std::uint16_t tick;      // price (tick index)
     std::uint16_t book_id;   // stock_locate
     mm::Side      side;      // buy or sell
-    std::uint8_t  state;     // EMPTY / OCCUPIED / TOMBSTONE
+    slotState     state;     // EMPTY / OCCUPIED / TOMBSTONE (0/1/2)
+    std::uint8_t  pad[14];   // PADDING to be compliant with cache lines.
 };
 
 class OrderMap
@@ -59,17 +69,107 @@ class OrderMap
   public:
     static constexpr std::size_t CAPACITY = 65536;    // 2^16 TOTAL capacity
     static constexpr std::size_t MASK = CAPACITY - 1; // (ref & mask) is GUARANTEED to be in range.
-    static constexpr std::uint64_t EMPTY =
-        0; // placeholder value. if we are probing and we hit this, we know to STOP probing!
-    void        insert(const OrderEntry& e);
-    OrderEntry* find(std::uint64_t ref);
-    void        erase(std::uint64_t ref);
+
+    [[nodiscard]] bool insert(const OrderEntry& e)
+    {
+        // logic is a bit different. we need to probe until we find a EMPTY (insert) or a TOMBSTONE
+        // (mark and continue until we find an empty).
+        std::size_t idx        = (e.ref & MASK);
+        std::size_t last_valid = CAPACITY;
+
+        for (std::size_t i = 0; i < CAPACITY; i++)
+        {
+            if ((slots_[idx].state == slotState::OCCUPIED) && (slots_[idx].ref == e.ref))
+            {
+                return false;
+            }
+            if (slots_[idx].state == slotState::EMPTY)
+            {
+                count_++;
+                if (last_valid != CAPACITY)
+                {
+                    slots_[last_valid]       = e;
+                    slots_[last_valid].state = slotState::OCCUPIED;
+                    return true;
+                }
+                else
+                {
+                    used_++;
+                    slots_[idx]       = e;
+                    slots_[idx].state = slotState::OCCUPIED;
+                    return true;
+                }
+            }
+            if (slots_[idx].state == slotState::TOMBSTONE)
+            {
+                if (last_valid == CAPACITY)
+                {
+                    last_valid = idx;
+                }
+            }
+            // otherwise increment idx!
+            idx = (idx + 1) & MASK;
+        }
+        return false;
+    }
+
+    OrderEntry* find(std::uint64_t ref)
+    {
+        std::size_t idx = find_idx(ref);
+        if (idx == CAPACITY)
+        {
+            return;
+        }
+        return &slots_[idx];
+    }
+
+    void erase(std::uint64_t ref)
+    {
+        std::size_t idx = find_idx(ref);
+        if (idx == CAPACITY)
+        {
+            return;
+        }
+        slots_[idx].state = slotState::TOMBSTONE;
+        count_--;
+    }
+
     // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
     // what I got mane.
   private:
+    //   this reads as making an ARRAY of sizeof("ORDERENTRY") CAPACITY. aka 65536 or "CAPACITY"
+    //   orders!
     alignas(128) OrderEntry
         slots_[CAPACITY]{}; // align on cache line boundaries, for the length of our CAPACITY.
-    std::size_t count_{0};  // how many are CURRENTLY used ?
-    std::size_t used_{0};   // how many have been used in TOTAL ?
+    // empty "{}" also means all indicies of our OrderMap start with "0". (for linear probing)
+    std::size_t count_{0}; // how many are CURRENTLY used ?
+    std::size_t used_{0};  // how many have been used in TOTAL ?
+
+    // helper for find() and erase(). const = function will NOT modidt object state. noexcept =
+    // function will NOT throw an exception.
+    std::size_t find_idx(std::uint64_t ref) const noexcept
+    {
+        // hash to find initial slot
+        // while taken, walk +=1
+        std::size_t idx = (ref & MASK);
+        // in this function & loop, a tombstone does not tell us anything, because the ref COULD be
+        // on the other side.
+        for (std::size_t i = 0; i < CAPACITY; i++)
+        {
+            // this means it has NOT been touched, the ref is NOT past this point.
+            if (slots_[idx].state == slotState::EMPTY)
+            {
+                return CAPACITY;
+            }
+            // found it!
+            if ((slots_[idx].state == slotState::OCCUPIED) && (slots_[idx].ref == ref))
+            {
+                return idx;
+            }
+            // Automatically handles WRAPPING
+            idx = (idx + 1) & MASK;
+        }
+        return CAPACITY;
+    }
 };
 } // namespace mm::state
