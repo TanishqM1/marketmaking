@@ -71,7 +71,7 @@ void test_empty_map_finds_nothing()
 {
     OrderMap m;
     CHECK(m.find(1) == nullptr);
-    CHECK(m.find(0) == nullptr);                 // EMPTY sentinel must not read as a hit
+    CHECK(m.find(0) == nullptr);                 // a zeroed slot (ref 0) must not read as a hit
     CHECK(m.find(0xFFFF'FFFF'FFFF'FFFFull) == nullptr);
 }
 
@@ -79,7 +79,7 @@ void test_insert_then_find()
 {
     OrderMap m;
     auto     e = make_entry(1029485761, 500, 17525, 42, mm::Side::Sell);
-    m.insert(e);
+    CHECK(m.insert(e));
 
     OrderEntry* got = m.find(1029485761);
     CHECK(got != nullptr);
@@ -98,7 +98,7 @@ void test_find_returns_mutable_pointer()
     // decrements `remaining` in place rather than paying a second lookup.
     OrderMap m;
     auto     e = make_entry(777, 500);
-    m.insert(e);
+    CHECK(m.insert(e));
 
     OrderEntry* p = m.find(777);
     CHECK(p != nullptr);
@@ -120,8 +120,8 @@ void test_collision_both_findable()
 
     auto ea = make_entry(a, 111);
     auto eb = make_entry(b, 222);
-    m.insert(ea);
-    m.insert(eb);
+    CHECK(m.insert(ea));
+    CHECK(m.insert(eb));
 
     CHECK(m.find(a) != nullptr);
     CHECK(m.find(b) != nullptr);
@@ -144,7 +144,7 @@ void test_long_probe_chain()
     {
         auto e = make_entry(colliding(base, static_cast<std::uint64_t>(i)),
                             static_cast<std::uint32_t>(i));
-        m.insert(e);
+        CHECK(m.insert(e));
     }
     for (int i = 0; i < N; ++i)
     {
@@ -159,7 +159,7 @@ void test_erase_then_not_found()
 {
     OrderMap m;
     auto     e = make_entry(12345);
-    m.insert(e);
+    CHECK(m.insert(e));
     CHECK(m.find(12345) != nullptr);
 
     m.erase(12345);
@@ -180,9 +180,9 @@ void test_erase_middle_of_chain()
     auto ea = make_entry(a, 1);
     auto eb = make_entry(b, 2);
     auto ec = make_entry(c, 3);
-    m.insert(ea);
-    m.insert(eb);
-    m.insert(ec);
+    CHECK(m.insert(ea));
+    CHECK(m.insert(eb));
+    CHECK(m.insert(ec));
 
     m.erase(a);
 
@@ -201,11 +201,11 @@ void test_erase_then_reinsert()
     // terminating for find.
     OrderMap m;
     auto     e1 = make_entry(555, 10);
-    m.insert(e1);
+    CHECK(m.insert(e1));
     m.erase(555);
 
     auto e2 = make_entry(555, 20);
-    m.insert(e2);
+    CHECK(m.insert(e2));
 
     CHECK(m.find(555) != nullptr);
     if (m.find(555))
@@ -214,13 +214,17 @@ void test_erase_then_reinsert()
 
 void test_reinsert_does_not_duplicate()
 {
-    // Inserting a ref that's already present must not leave two entries -- otherwise
-    // erase() removes one and find() still returns the stale other.
+    // Inserting a ref that's already present must be REJECTED and leave the original
+    // untouched -- otherwise erase() removes one copy and find() returns the stale other.
     OrderMap m;
     auto     e1 = make_entry(888, 10);
-    m.insert(e1);
+    CHECK(m.insert(e1));
     auto e2 = make_entry(888, 20);
-    m.insert(e2);
+    CHECK(!m.insert(e2));   // duplicate -> false
+
+    CHECK(m.find(888) != nullptr);
+    if (m.find(888))
+        CHECK_EQ(m.find(888)->remaining, 10u);   // original kept, not overwritten
 
     m.erase(888);
     CHECK(m.find(888) == nullptr);
@@ -238,7 +242,7 @@ void test_churn()
         {
             auto e = make_entry(colliding(4096, static_cast<std::uint64_t>(i)),
                                 static_cast<std::uint32_t>(round));
-            m.insert(e);
+            CHECK(m.insert(e));
         }
         for (int i = 0; i < 20; ++i)
         {
@@ -249,7 +253,7 @@ void test_churn()
 
     // and the table must still work afterwards
     auto e = make_entry(99999, 42);
-    m.insert(e);
+    CHECK(m.insert(e));
     CHECK(m.find(99999) != nullptr);
     if (m.find(99999))
         CHECK_EQ(m.find(99999)->remaining, 42u);
@@ -265,7 +269,7 @@ void test_many_distinct_refs()
     {
         auto e = make_entry(1'000'000ull + static_cast<std::uint64_t>(i) * 7919,
                             static_cast<std::uint32_t>(i));
-        m.insert(e);
+        CHECK(m.insert(e));
     }
     for (int i = 0; i < N; ++i)
     {
@@ -283,7 +287,7 @@ void test_erase_absent_is_safe()
     OrderMap m;
     m.erase(42);
     auto e = make_entry(42, 7);
-    m.insert(e);
+    CHECK(m.insert(e));
     m.erase(99);                       // different ref, same table
     CHECK(m.find(42) != nullptr);      // the real entry survived
 }
@@ -304,7 +308,8 @@ static_assert(alignof(OrderEntry) <= 128);
 // A non-power-of-two CAPACITY makes `ref & MASK` silently wrong rather than failing.
 static_assert((OrderMap::CAPACITY & OrderMap::MASK) == 0, "CAPACITY must be a power of two");
 static_assert(OrderMap::MASK == OrderMap::CAPACITY - 1);
-static_assert(OrderMap::EMPTY == 0, "zero-init of slots_ depends on EMPTY being 0");
+static_assert(static_cast<std::uint8_t>(slotState::EMPTY) == 0,
+              "zero-init of slots_ depends on EMPTY being 0");
 } // namespace mm::state
 
 int main()

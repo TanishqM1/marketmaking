@@ -118,7 +118,7 @@ class OrderMap
         std::size_t idx = find_idx(ref);
         if (idx == CAPACITY)
         {
-            return;
+            return nullptr;
         }
         return &slots_[idx];
     }
