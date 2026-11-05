@@ -100,3 +100,18 @@ Much of it is **empirical, not derived** — change one thing, measure p99.9, ke
 ⚠ **Firms vary enormously in rigour**, and a lot of circulating HFT advice is cargo-culted rather
 than measured. Also: research/backtesting (Python) runs on **separate hosts entirely**, so it can't
 compete for cache, cores or PCIe bandwidth with the trading path.
+
+### Q: Why not one machine per stock?
+Cost, correlation, and no benefit for most names. Firms **shard by core, not by box**: correlated
+symbols share a machine, the biggest names get a dedicated core, the long tail packs many per core.
+
+| reason | |
+|---|---|
+| cost | ~10,000 US symbols × colo rack space/power = millions/month |
+| correlation | MSFT's quote depends on AAPL/NVDA/QQQ. Cross-box = network hop **~1–2 µs**; cross-core on one socket = **tens of ns** |
+| ingest | feeds are multicast per *channel* (many symbols), so every box still parses the whole channel |
+| volume | most symbols are quiet; one core handles hundreds sequentially, no queue |
+
+> ⚠️ verify: "some firms give SPY/AAPL their own server" — plausible, not confirmed.
+
+See also: Sharding exists to make the working set fit (above).

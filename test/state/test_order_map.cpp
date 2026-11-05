@@ -45,9 +45,8 @@ int failures = 0;
 using mm::state::OrderEntry;
 using mm::state::OrderMap;
 
-OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100,
-                      std::uint16_t tick = 17525, std::uint16_t book = 42,
-                      mm::Side side = mm::Side::Buy)
+OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100, std::uint16_t tick = 17525,
+                      std::uint16_t book = 42, mm::Side side = mm::Side::Buy)
 {
     OrderEntry e{};
     e.ref       = ref;
@@ -71,7 +70,7 @@ void test_empty_map_finds_nothing()
 {
     OrderMap m;
     CHECK(m.find(1) == nullptr);
-    CHECK(m.find(0) == nullptr);                 // a zeroed slot (ref 0) must not read as a hit
+    CHECK(m.find(0) == nullptr); // a zeroed slot (ref 0) must not read as a hit
     CHECK(m.find(0xFFFF'FFFF'FFFF'FFFFull) == nullptr);
 }
 
@@ -106,17 +105,17 @@ void test_find_returns_mutable_pointer()
         return;
     p->remaining -= 200;
 
-    CHECK_EQ(m.find(777)->remaining, 300u);   // the write must have landed in the table
+    CHECK_EQ(m.find(777)->remaining, 300u); // the write must have landed in the table
 }
 
 void test_collision_both_findable()
 {
     // THE test for linear probing. Both refs hash to the same slot; the second must
     // probe forward on insert, and find() must walk past the first to reach it.
-    OrderMap m;
+    OrderMap            m;
     const std::uint64_t a = colliding(5313, 0);
     const std::uint64_t b = colliding(5313, 1);
-    CHECK_EQ(a & OrderMap::MASK, b & OrderMap::MASK);   // same home slot
+    CHECK_EQ(a & OrderMap::MASK, b & OrderMap::MASK); // same home slot
 
     auto ea = make_entry(a, 111);
     auto eb = make_entry(b, 222);
@@ -127,7 +126,7 @@ void test_collision_both_findable()
     CHECK(m.find(b) != nullptr);
     if (m.find(a) && m.find(b))
     {
-        CHECK_EQ(m.find(a)->remaining, 111u);   // must not return the wrong entry
+        CHECK_EQ(m.find(a)->remaining, 111u); // must not return the wrong entry
         CHECK_EQ(m.find(b)->remaining, 222u);
     }
 }
@@ -138,7 +137,7 @@ void test_long_probe_chain()
     // arithmetic if the home slot is near the end of the array.
     OrderMap            m;
     constexpr int       N    = 64;
-    const std::uint64_t base = OrderMap::CAPACITY - 3;   // deliberately near the end
+    const std::uint64_t base = OrderMap::CAPACITY - 3; // deliberately near the end
 
     for (int i = 0; i < N; ++i)
     {
@@ -187,7 +186,7 @@ void test_erase_middle_of_chain()
     m.erase(a);
 
     CHECK(m.find(a) == nullptr);
-    CHECK(m.find(b) != nullptr);   // <- breaks if erase writes EMPTY instead of a tombstone
+    CHECK(m.find(b) != nullptr); // <- breaks if erase writes EMPTY instead of a tombstone
     CHECK(m.find(c) != nullptr);
     if (m.find(b))
         CHECK_EQ(m.find(b)->remaining, 2u);
@@ -220,11 +219,11 @@ void test_reinsert_does_not_duplicate()
     auto     e1 = make_entry(888, 10);
     CHECK(m.insert(e1));
     auto e2 = make_entry(888, 20);
-    CHECK(!m.insert(e2));   // duplicate -> false
+    CHECK(!m.insert(e2)); // duplicate -> false
 
     CHECK(m.find(888) != nullptr);
     if (m.find(888))
-        CHECK_EQ(m.find(888)->remaining, 10u);   // original kept, not overwritten
+        CHECK_EQ(m.find(888)->remaining, 10u); // original kept, not overwritten
 
     m.erase(888);
     CHECK(m.find(888) == nullptr);
@@ -288,8 +287,8 @@ void test_erase_absent_is_safe()
     m.erase(42);
     auto e = make_entry(42, 7);
     CHECK(m.insert(e));
-    m.erase(99);                       // different ref, same table
-    CHECK(m.find(42) != nullptr);      // the real entry survived
+    m.erase(99);                  // different ref, same table
+    CHECK(m.find(42) != nullptr); // the real entry survived
 }
 
 } // namespace
