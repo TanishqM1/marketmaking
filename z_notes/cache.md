@@ -572,3 +572,24 @@ Two cores touching the buffer turns a cheap one-way invalidation into a ping-pon
 - **NUMA matters more than any of this.** The NIC hangs off **one socket's** PCIe lanes. Run the
   thread on the other socket and every packet crosses the inter-socket link (UPI / Infinity
   Fabric). Pin to a core on the NIC's socket.
+
+### Q: Can a ring buffer be evicted, and how is it kept in cache in industry?
+Yes. **Eviction is pressure-driven, not time-driven**: a line goes only when something else needs
+its slot (LRU-ish). Granularity is one line (64 B x86, 128 B M4), so half a ring can be evicted
+while the other half stays. A busy-polled ring is touched constantly, so its own consumer keeps it
+hot — the danger is *competition*.
+
+Core isolation alone is **not** immunity — it only protects the **private** caches. Firms layer four
+defences:
+
+| threat | defence |
+|---|---|
+| other threads / IRQs on your core (L1/L2) | `isolcpus` + `nohz_full` + IRQ affinity |
+| other cores (L3 is **shared**) | **CAT** — reserve L3 ways |
+| your own book/map/code | keep the total working set under L2 |
+| the NIC overrunning its own ring | size the ring to fit the DDIO ways ("leaky DMA" otherwise) |
+
+**Gotcha:** "isolate the core and it's never evicted" is the common overstatement. L3 is shared and
+DDIO writes into it regardless of which core you isolated. Linux/x86 only.
+
+See also: Reserving cache (CAT), DDIO above; [hft_systems.md](hft_systems.md) — ops setup.
