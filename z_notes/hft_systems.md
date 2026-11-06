@@ -115,3 +115,27 @@ symbols share a machine, the biggest names get a dedicated core, the long tail p
 > ⚠️ verify: "some firms give SPY/AAPL their own server" — plausible, not confirmed.
 
 See also: Sharding exists to make the working set fit (above).
+
+### Q: TLDR of this project's e2e structure, and what this machine limits
+A closed loop for **one symbol**: data in → book → quote → order out → fills back → position →
+next quote. The exchange is a stub (ITCH file replay + a gateway that acks/fills by a dumb rule).
+```
+UDP ITCH → ring → MoldUDP64 session (seq/gaps/A-B) → parse → dispatch (stock_locate) → book
+book → strategy (stub) → OMS → risk (2-3 real checks) → SBE encode → TCP order entry
+TCP exec reports (ack/fill/reject) → parse → OMS → position → strategy
+```
+
+| limitation here (M4 MacBook, macOS) | industry (x86 Xeon/EPYC, Linux) |
+|---|---|
+| no kernel bypass, sockets only | NIC DMAs into user memory (DPDK/ef_vi/Onload) |
+| no core pinning/isolation, CAT, DDIO, hugepage control | `isolcpus`, IRQ affinity, CAT, DDIO, hugepages |
+| one book, no sharding | shard symbols across cores, correlated names together |
+| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1-2 MB L2 **per core** → our 2 MB map is an L3 structure there |
+| latency numbers are macOS-socket numbers | tuned bypass, tick-to-trade ~1-5 µs (FPGA: ~10s-100s ns) |
+| P&L meaningless: replay doesn't react, fake fills, no queue position | real matching, queue position modelled |
+
+**What it does prove:** book correctness vs a real ITCH day, the full order lifecycle (incl. fill-
+after-cancel, rejects), and a per-stage latency breakdown — quote these as *relative*, not absolute.
+
+**Gotcha:** keep OS code behind `transport/` and no globals in the book, so Linux/bypass/sharding
+later is a swap, not a redesign.
