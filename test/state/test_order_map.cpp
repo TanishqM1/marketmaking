@@ -45,13 +45,13 @@ int failures = 0;
 using mm::state::OrderEntry;
 using mm::state::OrderMap;
 
-OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100, std::uint16_t tick = 17525,
+OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100, std::uint32_t tick = 17525,
                       std::uint16_t book = 42, mm::Side side = mm::Side::Buy)
 {
     OrderEntry e{};
     e.ref       = ref;
     e.remaining = remaining;
-    e.tick      = tick;
+    e.abs_tick  = tick;
     e.book_id   = book;
     e.side      = side;
     return e;
@@ -86,7 +86,7 @@ void test_insert_then_find()
         return;
     CHECK_EQ(got->ref, 1029485761ull);
     CHECK_EQ(got->remaining, 500u);
-    CHECK_EQ(got->tick, 17525u);
+    CHECK_EQ(got->abs_tick, 17525u);
     CHECK_EQ(got->book_id, 42u);
     CHECK(got->side == mm::Side::Sell);
 }
