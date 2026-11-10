@@ -20,12 +20,14 @@ struct OrderEntry
 {
     std::uint64_t ref;       // key
     std::uint32_t remaining; // this order's remaining amount.
-    std::uint16_t tick;      // price (tick index)
+    std::uint32_t abs_tick;  // price (tick index)
     std::uint16_t book_id;   // stock_locate
     mm::Side      side;      // buy or sell
     slotState     state;     // EMPTY / OCCUPIED / TOMBSTONE (0/1/2)
-    std::uint8_t  pad[14];   // PADDING to be compliant with cache lines.
+    std::uint8_t  pad[12];   // PADDING to be compliant with cache lines.
 };
+
+static_assert(sizeof(OrderEntry) == 32);
 
 class OrderMap
 {
@@ -69,8 +71,9 @@ class OrderMap
   public:
     static constexpr std::size_t CAPACITY = 65536;    // 2^16 TOTAL capacity
     static constexpr std::size_t MASK = CAPACITY - 1; // (ref & mask) is GUARANTEED to be in range.
+    static_assert((CAPACITY & MASK) == 0);
 
-    [[nodiscard]] bool insert(const OrderEntry& e)
+    [[nodiscard]] bool insert(const OrderEntry& e) noexcept
     {
         // logic is a bit different. we need to probe until we find a EMPTY (insert) or a TOMBSTONE
         // (mark and continue until we find an empty).
@@ -110,10 +113,18 @@ class OrderMap
             // otherwise increment idx!
             idx = (idx + 1) & MASK;
         }
+        // if we are not at CAPACITY, then we can add to last_valid
+        if (last_valid != CAPACITY)
+        {
+            count_++;
+            slots_[last_valid]       = e;
+            slots_[last_valid].state = slotState::OCCUPIED;
+            return true;
+        }
         return false;
     }
 
-    OrderEntry* find(std::uint64_t ref)
+    OrderEntry* find(std::uint64_t ref) noexcept
     {
         std::size_t idx = find_idx(ref);
         if (idx == CAPACITY)
@@ -123,7 +134,7 @@ class OrderMap
         return &slots_[idx];
     }
 
-    void erase(std::uint64_t ref)
+    void erase(std::uint64_t ref) noexcept
     {
         std::size_t idx = find_idx(ref);
         if (idx == CAPACITY)
@@ -133,6 +144,20 @@ class OrderMap
         slots_[idx].state = slotState::TOMBSTONE;
         count_--;
     }
+
+    // delete DIRECTLY with a pointer to the order (no linear probing or mask search ever needed.)
+    // cases like delete() where we must find, then ERASE, might as well only probe once.
+    void erase(OrderEntry* p) noexcept
+    {
+        p->state = slotState::TOMBSTONE;
+        count_--;
+    }
+
+    // APIs to fetch and retrieve count_ and used_ sizing.
+    // TESTS ONLY. no code is generated.
+    std::size_t size() const noexcept { return count_; }
+
+    std::size_t used() const noexcept { return used_; }
 
     // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
     // what I got mane.

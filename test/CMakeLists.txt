@@ -12,3 +12,9 @@ add_executable(test_order_map EXCLUDE_FROM_ALL
 )
 target_link_libraries(test_order_map PRIVATE mm_types mm_warnings mm_sanitizers)
 add_test(NAME order_map COMMAND test_order_map)
+
+add_executable(test_book EXCLUDE_FROM_ALL
+    state/test_book.cpp
+)
+target_link_libraries(test_book PRIVATE mm_types mm_warnings mm_sanitizers)
+add_test(NAME book COMMAND test_book)
