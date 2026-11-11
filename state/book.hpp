@@ -99,12 +99,32 @@ class Book
         reduce(order, qty);
     }
 
-    void remove(std::uint64_t ref) {}
+    void remove(std::uint64_t ref) noexcept
+    {
+        // find order, simply remove its entire qty
+        OrderEntry* order = orders_.find(ref);
+
+        if (order == nullptr)
+        {
+            return;
+        }
+        reduce(order, (*order).remaining);
+    }
 
     // delete (remove) + add
     void replace(std::uint64_t original_ref, std::uint64_t new_ref, std::uint32_t price,
                  std::uint32_t qty) noexcept
     {
+        // find order, first remove it, then add it back.
+        OrderEntry* order = orders_.find(original_ref);
+
+        if (order == nullptr)
+        {
+            return;
+        }
+        mm::Side side = (*order).side;
+        reduce(order, (*order).remaining);
+        add(new_ref, side, price, qty);
     }
 
     // qty == 0 -> that side is empty and `tick` is meaningless.

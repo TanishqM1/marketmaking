@@ -1,8 +1,7 @@
 // Tests for state/book.hpp
 //
-// Covers the constructor, best_bid/best_ask, add, execute and cancel. remove/replace and
-// the scan helpers get tests as they're written -- until the scans exist, no test empties
-// the best level while a worse level still holds qty.
+// Covers the constructor, best_bid/best_ask, add, execute, cancel, the scans (driven through
+// execute/cancel, since they're private), remove and replace.
 
 #include <cstdio>
 
@@ -170,6 +169,153 @@ void test_cancel_partial_then_full()
     CHECK_EQ(b.best_ask().qty, 0u);
 }
 
+// ---- scans ----------------------------------------------------------------
+
+void test_best_bid_empties_scans_down()
+{
+    // the scan must skip the empty ticks between 175.23 and 175.20
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 100);
+    b.add(2, Side::Buy, 1752000, 40);
+    b.execute(1, 100);
+    CHECK_EQ(b.best_bid().tick, 17520u);
+    CHECK_EQ(b.best_bid().qty, 40u);
+}
+
+void test_best_ask_empties_scans_up()
+{
+    static Book b{1752300};
+    b.add(1, Side::Sell, 1752500, 30);
+    b.add(2, Side::Sell, 1753000, 70);
+    b.cancel(1, 30);
+    CHECK_EQ(b.best_ask().tick, 17530u);
+    CHECK_EQ(b.best_ask().qty, 70u);
+}
+
+void test_last_level_empties_side_goes_empty()
+{
+    // nothing left to find: the scan runs off the window and parks on NO_LEVEL
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 10);
+    b.add(2, Side::Sell, 1752500, 10);
+    b.execute(1, 10);
+    b.execute(2, 10);
+    CHECK_EQ(b.best_bid().qty, 0u);
+    CHECK_EQ(b.best_ask().qty, 0u);
+    CHECK_EQ(b.best_bid().tick, 17523u - 2048u + Book::NO_LEVEL);
+    CHECK_EQ(b.best_ask().tick, 17523u - 2048u + Book::NO_LEVEL);
+
+    // and the side must be usable again afterwards
+    b.add(3, Side::Buy, 1752100, 5);
+    CHECK_EQ(b.best_bid().tick, 17521u);
+    CHECK_EQ(b.best_bid().qty, 5u);
+}
+
+void test_non_best_level_empties_no_move()
+{
+    // emptying a worse level must leave the best alone
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 10);
+    b.add(2, Side::Buy, 1752000, 40);
+    b.execute(2, 40);
+    CHECK_EQ(b.best_bid().tick, 17523u);
+    CHECK_EQ(b.best_bid().qty, 10u);
+}
+
+void test_bid_scan_from_index_zero_no_wrap()
+{
+    // $5 stock -> low_ = 0. A bid at tick 0 sits on ladder index 0; emptying it must
+    // end on NO_LEVEL, not wrap the uint16 cursor to 65535.
+    static Book b{50000};
+    b.add(1, Side::Buy, 0, 10);
+    CHECK_EQ(b.best_bid().tick, 0u);
+    b.execute(1, 10);
+    CHECK_EQ(b.best_bid().qty, 0u);
+    CHECK_EQ(b.best_bid().tick, 0u + Book::NO_LEVEL);
+}
+
+void test_ask_scan_at_top_of_window()
+{
+    // best ask on the last real index (4095): the scan starts at 4096 = the guard
+    static Book b{50000};
+    b.add(1, Side::Sell, 4095 * Book::TICK_SIZE, 10);
+    CHECK_EQ(b.best_ask().tick, 4095u);
+    b.cancel(1, 10);
+    CHECK_EQ(b.best_ask().qty, 0u);
+    CHECK_EQ(b.best_ask().tick, 0u + Book::NO_LEVEL);
+}
+
+// ---- remove / replace -----------------------------------------------------
+
+void test_remove_takes_full_remaining()
+{
+    // D carries no qty: the book must pull whatever is left (60 after a partial fill)
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 100);
+    b.add(2, Side::Buy, 1752300, 50);
+    b.execute(1, 40);
+    b.remove(1);
+    CHECK_EQ(b.best_bid().qty, 50u);
+    b.remove(1); // already gone: no-op
+    CHECK_EQ(b.best_bid().qty, 50u);
+}
+
+void test_remove_best_scans()
+{
+    static Book b{1752300};
+    b.add(1, Side::Sell, 1752500, 30);
+    b.add(2, Side::Sell, 1752800, 70);
+    b.remove(1);
+    CHECK_EQ(b.best_ask().tick, 17528u);
+    CHECK_EQ(b.best_ask().qty, 70u);
+    b.remove(42); // unknown ref
+    CHECK_EQ(b.best_ask().qty, 70u);
+}
+
+void test_replace_moves_price_and_keeps_side()
+{
+    // U has no side on the wire: a sell must come back as a sell at the new price
+    static Book b{1752300};
+    b.add(1, Side::Sell, 1752500, 30);
+    b.replace(1, 2, 1752700, 20);
+    CHECK_EQ(b.best_ask().tick, 17527u);
+    CHECK_EQ(b.best_ask().qty, 20u);
+    CHECK_EQ(b.best_bid().qty, 0u);
+}
+
+void test_replace_new_ref_live_old_ref_dead()
+{
+    // all later messages use the new ref; the old one must be gone
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 100);
+    b.replace(1, 2, 1752300, 80);
+    CHECK_EQ(b.best_bid().qty, 80u);
+    b.execute(1, 10); // old ref: no-op
+    CHECK_EQ(b.best_bid().qty, 80u);
+    b.execute(2, 30); // new ref works
+    CHECK_EQ(b.best_bid().qty, 50u);
+}
+
+void test_replace_unknown_ref_is_noop()
+{
+    // never saw the original -> side unknown -> must NOT guess and add
+    static Book b{1752300};
+    b.replace(42, 43, 1752300, 80);
+    CHECK_EQ(b.best_bid().qty, 0u);
+    CHECK_EQ(b.best_ask().qty, 0u);
+}
+
+void test_replace_into_and_out_of_window()
+{
+    static Book b{1752300};
+    b.add(1, Side::Buy, 1752300, 10);
+    b.replace(1, 2, 9999900, 10); // moves out of the window: ladder empties
+    CHECK_EQ(b.best_bid().qty, 0u);
+    b.replace(2, 3, 1752100, 10); // back in: found in the map, re-enters the ladder
+    CHECK_EQ(b.best_bid().tick, 17521u);
+    CHECK_EQ(b.best_bid().qty, 10u);
+}
+
 } // namespace
 
 // Guard slot must exist: the empty-side read indexes [NO_LEVEL].
@@ -192,6 +338,18 @@ int main()
     test_execute_unknown_ref_is_noop();
     test_execute_out_of_window_leaves_ladder();
     test_cancel_partial_then_full();
+    test_best_bid_empties_scans_down();
+    test_best_ask_empties_scans_up();
+    test_last_level_empties_side_goes_empty();
+    test_non_best_level_empties_no_move();
+    test_bid_scan_from_index_zero_no_wrap();
+    test_ask_scan_at_top_of_window();
+    test_remove_takes_full_remaining();
+    test_remove_best_scans();
+    test_replace_moves_price_and_keeps_side();
+    test_replace_new_ref_live_old_ref_dead();
+    test_replace_unknown_ref_is_noop();
+    test_replace_into_and_out_of_window();
 
     if (failures == 0)
     {
