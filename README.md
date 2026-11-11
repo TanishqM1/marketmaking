@@ -1,68 +1,80 @@
 # marketmaking
 
-Market-making system and mock exchange. ITCH market data in, SBE order entry out.
+A low-latency market-making system in C++23, built alongside a mock exchange to trade against.
+It reads Nasdaq ITCH market data over UDP, keeps a per-symbol order book, and will quote back out
+over SBE/TCP.
 
-## Build
+## Architecture
+
+```
+types/      shared value types (Side, ...); depends on nothing, so every layer can include it.
+transport/  UDP socket that receives raw datagrams; knows nothing about what the bytes mean.
+session/    MoldUDP64 sequence numbers and gap detection, so dropped packets are noticed. (not started)
+codec/      ITCH decoding: bytes -> typed messages, bounds-checked, no I/O.
+state/      the order book: an order-ref hash map plus tick-indexed bid/ask ladders and best bid/ask.
+strategy/   fair value and quoting logic that decides what to bid and offer. (not started)
+risk/       pre-trade checks that every outgoing order must pass. (not started)
+app/        main and the event loop: wires transport -> codec -> book together.
+exchange/   the mock exchange, a separate binary that shares codec/ but not the book. (not started)
+tools/      replay, book dumper and latency histograms. (not started)
+test/       one test binary per layer, mirroring the source tree.
+z_notes/    topic-organized learning notes and changelog; z_questions/ holds open questions.
+```
+
+## Build, test, run
 
 From the project root:
 
 ```sh
+# configure once (re-run only after deleting build/)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+# compile the trading system
 cmake --build build
-```
 
-After the first configure, `cmake --build build` is enough — it re-runs CMake
-automatically if a `CMakeLists.txt` changed.
-
-```sh
-rm -rf build        # guaranteed-clean slate
-```
-
-## Test
-
-```sh
+# tests are built by name, then run
+cmake --build build --target test_codec test_order_map test_book
 ctest --test-dir build --output-on-failure
+
+# start the system: listens for ITCH datagrams on UDP port 8080 (Ctrl-C to stop)
+./build/trading_system
 ```
 
-Or run the binary directly, which is faster for iterating:
-
-```sh
-./build/test/test_codec
-```
-
-## Release build
-
-Separate directory, so Debug and Release can coexist:
-
-```sh
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release
-```
-
-| | flags | use for |
-|---|---|---|
-| Debug | `-O0 -g` + ASan/UBSan | tests, debugging |
-| Release | `-O2 -g -march=native` | **any latency measurement** |
-
-A latency number from a Debug build is meaningless. Measure in Release only.
-
-Sanitizers are on by default in Debug; disable with `-DMM_SANITIZE=OFF`. Note
-LeakSanitizer is unsupported on arm64 macOS — use `leaks --atExit -- ./binary`
-for leaks, and if an ASan run appears to hang, try `ASAN_OPTIONS=symbolize=0`.
-
-## Layout
-
-```
-types/        Price, Qty, Side, OrderRef — no wire knowledge, compiles alone
-codec/        ITCH offsets, decoders — all inbound wire knowledge
-state/        order-ref map, price levels (not started)
-transport/    sockets, MoldUDP64 (not started)
-session/      sequence numbers, gap detection (not started)
-exchange/     mock exchange — separate binary (not started)
-test/         mirrors the source tree
-z_notes/      topic-organized FAQ + learning changelog
-z_questions/  open questions
-```
+For latency measurements use a Release build in its own directory
+(`cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release`), never Debug.
+Debug enables ASan/UBSan by default; if ASan hangs on your machine, configure with
+`-DMM_SANITIZE=OFF`.
 
 Working agreement and priorities: [AGENTS.md](AGENTS.md).
-Wire format reference: [z_notes/inbound_outbound_data.md](z_notes/inbound_outbound_data.md).
+
+## Diagram
+
+Solid = built, dashed = planned.
+
+```mermaid
+flowchart LR
+    feed(["ITCH feed<br/>UDP multicast"]) --> transport
+
+    subgraph ts["trading_system (app/)"]
+        direction LR
+        transport["transport/<br/>UDP receiver"] --> session["session/<br/>MoldUDP64, gaps"]
+        session --> codec["codec/<br/>ITCH decode"]
+        codec -. "not wired yet" .-> book
+
+        subgraph state["state/"]
+            book["Book<br/>bid/ask ladders<br/>best bid/ask"] --- omap["OrderMap<br/>ref → order"]
+        end
+
+        book --> strategy["strategy/<br/>fair value, quotes"]
+        strategy --> risk["risk/<br/>pre-trade checks"]
+        risk --> out["SBE encode<br/>TCP order entry"]
+    end
+
+    out --> exchange[("exchange/<br/>mock exchange")]
+    exchange -- "fills, acks" --> ts
+
+    types["types/<br/>shared value types"] -.- ts
+
+    classDef planned stroke-dasharray: 5 5,color:#888
+    class session,strategy,risk,out,exchange planned
+```
