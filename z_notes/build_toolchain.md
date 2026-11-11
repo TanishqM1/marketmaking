@@ -18,6 +18,23 @@ if (packet.empty()) continue;        // re-tests what receive() already decided
 mm::itch::decode_packet(packet);     // libmm_codec.a -> opaque call
 ```
 
+### Q: cpp compiler can only inline code it can see (code/logic in hpp files!)
+Yes. Inlining needs the **body** in the caller's TU. `#include` pastes the header's text in, so a
+body in the `.hpp` is visible everywhere; a body in a `.cpp` is a declaration-only promise → real call.
+
+| code | goes in | why |
+|---|---|---|
+| hot (book handlers, order map, scans) — runs every message | `.hpp`, inside the class | inlined: no jump/return/register save, fields stay in registers |
+| cold (recentering, setup, error reporting) | `.cpp` | call cost irrelevant; keeps headers and I-cache lean |
+
+**Example:** `decode_packet` (itch.cpp) → `book.add(...)`. Body in book.cpp = a call per message
+(few ns × millions/s). Body in book.hpp = pasted into the switch case.
+
+**Gotcha:** visible ≠ inlined — the compiler still decides. Check the asm (`bl <name>` = a real
+call); force with `[[gnu::always_inline]]` only after measuring. LTO (below) also inlines across
+`.cpp`s, but only in builds with the flag, so firms keep hot code header-only regardless.
+> ⚠️ verify: "firms keep hot code header-only" — common practice, not confirmed for a specific firm.
+
 ### LTO (Link Time Optimization)
 The fix. Each `.o` stores a half-compiled intermediate form instead of finished machine code, and
 the optimiser gets all of them at **link** time — so it can inline across files.

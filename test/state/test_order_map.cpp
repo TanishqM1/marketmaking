@@ -1,7 +1,7 @@
 // Tests for state/order_map.*
 //
 // Deliberately knows NOTHING about markets — no ITCH, no prices, no book. It just
-// hammers the container: insert, find, erase, collisions, probe chains, tombstones.
+// hammers the container: insert, find, erase, collisions, probe chains, backward-shift delete.
 // That isolation is the point: when a book bug shows up later, these tests tell you
 // whether the map is implicated.
 //
@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <unordered_map>
 
 #include "state/order_map.hpp"
 
@@ -46,13 +47,12 @@ using mm::state::OrderEntry;
 using mm::state::OrderMap;
 
 OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100, std::uint32_t tick = 17525,
-                      std::uint16_t book = 42, mm::Side side = mm::Side::Buy)
+                      mm::Side side = mm::Side::Buy)
 {
     OrderEntry e{};
     e.ref       = ref;
     e.remaining = remaining;
     e.abs_tick  = tick;
-    e.book_id   = book;
     e.side      = side;
     return e;
 }
@@ -77,7 +77,7 @@ void test_empty_map_finds_nothing()
 void test_insert_then_find()
 {
     OrderMap m;
-    auto     e = make_entry(1029485761, 500, 17525, 42, mm::Side::Sell);
+    auto     e = make_entry(1029485761, 500, 17525, mm::Side::Sell);
     CHECK(m.insert(e));
 
     OrderEntry* got = m.find(1029485761);
@@ -87,7 +87,6 @@ void test_insert_then_find()
     CHECK_EQ(got->ref, 1029485761ull);
     CHECK_EQ(got->remaining, 500u);
     CHECK_EQ(got->abs_tick, 17525u);
-    CHECK_EQ(got->book_id, 42u);
     CHECK(got->side == mm::Side::Sell);
 }
 
@@ -167,10 +166,10 @@ void test_erase_then_not_found()
 
 void test_erase_middle_of_chain()
 {
-    // THE tombstone test, and the one most likely to fail on a first implementation.
+    // THE erase test, and the one most likely to fail on a first implementation.
     // a, b, c all share a home slot -> stored at idx, idx+1, idx+2.
-    // Erase `a` (the FIRST). If erase blanks the slot to EMPTY, find(b) stops there
-    // and reports "not in the map" even though b is one slot further on.
+    // Erase `a` (the FIRST). If erase just blanks the slot to EMPTY without shifting b and c
+    // back, find(b) stops there and reports "not in the map" even though b is one slot on.
     OrderMap            m;
     const std::uint64_t a = colliding(900, 0);
     const std::uint64_t b = colliding(900, 1);
@@ -186,7 +185,7 @@ void test_erase_middle_of_chain()
     m.erase(a);
 
     CHECK(m.find(a) == nullptr);
-    CHECK(m.find(b) != nullptr); // <- breaks if erase writes EMPTY instead of a tombstone
+    CHECK(m.find(b) != nullptr); // <- breaks if erase leaves a gap in the chain
     CHECK(m.find(c) != nullptr);
     if (m.find(b))
         CHECK_EQ(m.find(b)->remaining, 2u);
@@ -196,8 +195,7 @@ void test_erase_middle_of_chain()
 
 void test_erase_then_reinsert()
 {
-    // A tombstoned slot must still be WRITABLE -- it's free for insert, just not
-    // terminating for find.
+    // An erased slot must be WRITABLE again.
     OrderMap m;
     auto     e1 = make_entry(555, 10);
     CHECK(m.insert(e1));
@@ -231,8 +229,8 @@ void test_reinsert_does_not_duplicate()
 
 void test_churn()
 {
-    // Insert/erase repeatedly on colliding refs. With tombstones this is what slowly
-    // fills the table; with backward-shift deletion it should run forever.
+    // Insert/erase repeatedly on colliding refs. Every erase shifts the chain back, so
+    // the table never fills up with dead slots.
     // If this hangs, probing has no EMPTY slot left to terminate on.
     OrderMap m;
     for (int round = 0; round < 500; ++round)
@@ -291,6 +289,117 @@ void test_erase_absent_is_safe()
     CHECK(m.find(42) != nullptr); // the real entry survived
 }
 
+void test_monotonic_refs_never_degrade()
+{
+    // THE regression test for tombstones. ITCH refs only go UP, so `ref & MASK` sweeps every
+    // slot in turn. With tombstones, after ~65k adds no EMPTY slot was left and every insert /
+    // missing-ref find scanned all 65,536 slots. Here: 4 full sweeps with only 16 live orders,
+    // then 20,000 misses. With tombstones this takes ~1.3 billion slot reads (seconds);
+    // with backward shift it is instant. If this test is slow, tombstones are back.
+    OrderMap            m;
+    constexpr std::uint64_t N    = 4 * OrderMap::CAPACITY;
+    constexpr std::uint64_t LIVE = 16;
+    for (std::uint64_t ref = 1; ref <= N; ++ref)
+    {
+        auto e = make_entry(ref);
+        CHECK(m.insert(e));
+        if (ref > LIVE)
+            m.erase(ref - LIVE);
+    }
+    CHECK_EQ(m.size(), LIVE);
+    for (std::uint64_t i = 0; i < 20000; ++i)
+        CHECK(m.find(N + 1 + i * 7) == nullptr); // never inserted
+    for (std::uint64_t ref = N - LIVE + 1; ref <= N; ++ref)
+        CHECK(m.find(ref) != nullptr);           // the live ones survived every shift
+}
+
+void test_shift_keeps_entry_before_its_home()
+{
+    // Cluster: a (home H) at H, b (home H) at H+1, c (home H+1) at H+2.
+    // Erase a: b must move back to H (its home), and c must move to H+1 (its home).
+    // Then erase b's NEW slot via ref: c must stay at H+1 -- moving it to H would put it
+    // before its home, where find() never looks.
+    OrderMap            m;
+    const std::uint64_t H = 777;
+    const std::uint64_t a = colliding(H, 0);
+    const std::uint64_t b = colliding(H, 1);
+    const std::uint64_t c = colliding(H + 1, 1);
+    auto ea = make_entry(a, 1);
+    auto eb = make_entry(b, 2);
+    auto ec = make_entry(c, 3);
+    CHECK(m.insert(ea));
+    CHECK(m.insert(eb));
+    CHECK(m.insert(ec));
+
+    m.erase(a);
+    CHECK(m.find(a) == nullptr);
+    CHECK(m.find(b) != nullptr);
+    CHECK(m.find(c) != nullptr);
+
+    m.erase(b);
+    CHECK(m.find(b) == nullptr);
+    CHECK(m.find(c) != nullptr);
+    if (m.find(c))
+        CHECK_EQ(m.find(c)->remaining, 3u);
+    CHECK_EQ(m.size(), 1u);
+}
+
+void test_random_ops_match_reference()
+{
+    // Random insert/erase/find against std::unordered_map as the reference answer.
+    // Refs are packed into a few home slots near the END of the table so clusters are long,
+    // overlap, and wrap past index 65535 -> 0: every branch of the shift gets exercised.
+    OrderMap                                     m;
+    std::unordered_map<std::uint64_t, std::uint32_t> ref_model;
+    std::uint64_t                                rng = 0x9E3779B97F4A7C15ull;
+    auto next = [&rng]() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        return rng;
+    };
+
+    for (int step = 0; step < 200000; ++step)
+    {
+        // 8 home slots around the wrap point x 8 refs each = 64 possible keys
+        std::uint64_t home = (OrderMap::CAPACITY - 4 + next() % 8) & OrderMap::MASK;
+        std::uint64_t key  = colliding(home, next() % 8);
+        std::uint64_t op   = next() % 3;
+
+        if (op == 0)
+        {
+            auto val = static_cast<std::uint32_t>(step);
+            auto e   = make_entry(key, val);
+            bool ok  = m.insert(e);
+            bool was_absent = ref_model.find(key) == ref_model.end();
+            CHECK(ok == was_absent);
+            if (was_absent)
+                ref_model[key] = val;
+        }
+        else if (op == 1)
+        {
+            m.erase(key);
+            ref_model.erase(key);
+        }
+        else
+        {
+            OrderEntry* p  = m.find(key);
+            auto        it = ref_model.find(key);
+            CHECK((p != nullptr) == (it != ref_model.end()));
+            if (p && it != ref_model.end())
+                CHECK_EQ(p->remaining, it->second);
+        }
+    }
+    CHECK_EQ(m.size(), ref_model.size());
+    for (const auto& [key, val] : ref_model)
+    {
+        OrderEntry* p = m.find(key);
+        CHECK(p != nullptr);
+        if (p)
+            CHECK_EQ(p->remaining, val);
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -325,6 +434,9 @@ int main()
     test_churn();
     test_many_distinct_refs();
     test_erase_absent_is_safe();
+    test_monotonic_refs_never_degrade();
+    test_shift_keeps_entry_before_its_home();
+    test_random_ops_match_reference();
 
     if (failures == 0)
     {

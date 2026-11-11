@@ -10,21 +10,19 @@ namespace mm::state
 // must be above the struct that uses it..
 enum class slotState : std::uint8_t
 {
-    // 0/1/2
+    // 0/1
     EMPTY,
-    OCCUPIED,
-    TOMBSTONE
+    OCCUPIED
 };
 
 struct OrderEntry
 {
     std::uint64_t ref;       // key
     std::uint32_t remaining; // this order's remaining amount.
-    std::uint32_t abs_tick;  // price (tick index)
-    std::uint16_t book_id;   // stock_locate
+    std::uint32_t abs_tick;  // absolute tick, not price
     mm::Side      side;      // buy or sell
-    slotState     state;     // EMPTY / OCCUPIED / TOMBSTONE (0/1/2)
-    std::uint8_t  pad[12];   // PADDING to be compliant with cache lines.
+    slotState     state;     // EMPTY / OCCUPIED (0/1)
+    std::uint8_t  pad[14];   // PADDING to be compliant with cache lines.
 };
 
 static_assert(sizeof(OrderEntry) == 32);
@@ -75,10 +73,8 @@ class OrderMap
 
     [[nodiscard]] bool insert(const OrderEntry& e) noexcept
     {
-        // logic is a bit different. we need to probe until we find a EMPTY (insert) or a TOMBSTONE
-        // (mark and continue until we find an empty).
-        std::size_t idx        = (e.ref & MASK);
-        std::size_t last_valid = CAPACITY;
+        // probe until we find an EMPTY (insert there). a matching ref on the way = duplicate.
+        std::size_t idx = (e.ref & MASK);
 
         for (std::size_t i = 0; i < CAPACITY; i++)
         {
@@ -89,38 +85,14 @@ class OrderMap
             if (slots_[idx].state == slotState::EMPTY)
             {
                 count_++;
-                if (last_valid != CAPACITY)
-                {
-                    slots_[last_valid]       = e;
-                    slots_[last_valid].state = slotState::OCCUPIED;
-                    return true;
-                }
-                else
-                {
-                    used_++;
-                    slots_[idx]       = e;
-                    slots_[idx].state = slotState::OCCUPIED;
-                    return true;
-                }
-            }
-            if (slots_[idx].state == slotState::TOMBSTONE)
-            {
-                if (last_valid == CAPACITY)
-                {
-                    last_valid = idx;
-                }
+                slots_[idx]       = e;
+                slots_[idx].state = slotState::OCCUPIED;
+                return true;
             }
             // otherwise increment idx!
             idx = (idx + 1) & MASK;
         }
-        // if we are not at CAPACITY, then we can add to last_valid
-        if (last_valid != CAPACITY)
-        {
-            count_++;
-            slots_[last_valid]       = e;
-            slots_[last_valid].state = slotState::OCCUPIED;
-            return true;
-        }
+        // table full
         return false;
     }
 
@@ -141,23 +113,17 @@ class OrderMap
         {
             return;
         }
-        slots_[idx].state = slotState::TOMBSTONE;
-        count_--;
+        shift_delete(idx);
     }
 
-    // delete DIRECTLY with a pointer to the order (no linear probing or mask search ever needed.)
+    // delete DIRECTLY with a pointer to the order (no second search for it).
     // cases like delete() where we must find, then ERASE, might as well only probe once.
-    void erase(OrderEntry* p) noexcept
-    {
-        p->state = slotState::TOMBSTONE;
-        count_--;
-    }
+    // WARNING: erase moves other entries, so any OrderEntry* held across an erase is stale.
+    void erase(OrderEntry* p) noexcept { shift_delete(static_cast<std::size_t>(p - slots_)); }
 
-    // APIs to fetch and retrieve count_ and used_ sizing.
+    // API to fetch count_.
     // TESTS ONLY. no code is generated.
     std::size_t size() const noexcept { return count_; }
-
-    std::size_t used() const noexcept { return used_; }
 
     // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
     // what I got mane.
@@ -168,7 +134,32 @@ class OrderMap
         slots_[CAPACITY]{}; // align on cache line boundaries, for the length of our CAPACITY.
     // empty "{}" also means all indicies of our OrderMap start with "0". (for linear probing)
     std::size_t count_{0}; // how many are CURRENTLY used ?
-    std::size_t used_{0};  // how many have been used in TOTAL ?
+
+    // backward-shift deletion: empty the slot, then slide later entries in the cluster back
+    // into the gap, so no EMPTY ever sits between an entry and its home slot. keeps every
+    // probe chain short forever (tombstones never cleared, and filled the table).
+    // an entry at j may move into the hole only if the hole is in [home, j) -- i.e. moving
+    // it doesn't put it BEFORE its own home slot, where find() would never look.
+    void shift_delete(std::size_t hole) noexcept
+    {
+        std::size_t j = hole;
+        for (std::size_t i = 0; i < CAPACITY; i++)
+        {
+            j = (j + 1) & MASK;
+            if (slots_[j].state == slotState::EMPTY)
+            {
+                break;
+            }
+            std::size_t home = slots_[j].ref & MASK;
+            if (((j - home) & MASK) >= ((j - hole) & MASK))
+            {
+                slots_[hole] = slots_[j];
+                hole         = j;
+            }
+        }
+        slots_[hole].state = slotState::EMPTY;
+        count_--;
+    }
 
     // helper for find() and erase(). const = function will NOT modidt object state. noexcept =
     // function will NOT throw an exception.
@@ -177,8 +168,6 @@ class OrderMap
         // hash to find initial slot
         // while taken, walk +=1
         std::size_t idx = (ref & MASK);
-        // in this function & loop, a tombstone does not tell us anything, because the ref COULD be
-        // on the other side.
         for (std::size_t i = 0; i < CAPACITY; i++)
         {
             // this means it has NOT been touched, the ref is NOT past this point.
