@@ -42,7 +42,39 @@ class Book
     }
 
     // ITCH price, not tick
-    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty) noexcept {}
+    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty) noexcept
+    {
+        std::uint32_t tick = price / TICK_SIZE;
+        OrderEntry    order{.ref = ref, .remaining = qty, .abs_tick = tick, .side = side};
+        std::uint32_t idx = tick - low_;
+
+        // insertion error
+        if (!orders_.insert(order))
+        {
+            return;
+        }
+        // oob error
+        if (idx >= ARRAY_SIZE)
+        {
+            return;
+        }
+        if (side == mm::Side::Buy)
+        {
+            bids_[idx] += qty;
+            if (idx > best_bid_ || best_bid_ == NO_LEVEL)
+            {
+                best_bid_ = static_cast<std::uint16_t>(idx);
+            }
+        }
+        else
+        {
+            asks_[idx] += qty;
+            if (idx < best_ask_)
+            {
+                best_ask_ = static_cast<std::uint16_t>(idx);
+            }
+        }
+    }
 
     void execute(std::uint64_t ref, std::uint32_t qty) noexcept {}
 
