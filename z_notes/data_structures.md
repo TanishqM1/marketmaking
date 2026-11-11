@@ -177,3 +177,30 @@ walk the probe path looking for the ref
   hit EMPTY      -> not present, write to the remembered slot
 ```
 Get it wrong and `erase` removes one copy while `find` keeps returning the stale other.
+
+### Q: backward-shift deletion (the tombstone fix)
+`erase` now empties the slot and slides later entries in the cluster back into the gap (never
+before their own home slot), so the table never fills with dead tombstones and every probe stays
+short forever — [state/order_map.hpp:143](../state/order_map.hpp) `shift_delete`.
+
+**Tradeoff:** *eager* cleanup (tombstones were the lazy one — mark dead, never clean). Pay a little
+on every erase — shift only the rest of *this cluster*, stop at the first EMPTY (usually 0–1
+entries, same cache line) — so insert/find never walk dead slots. Without it, after one sweep of
+the table every miss scanned all 65,536 slots (measured: 10.8 s → 0.21 s on 4 sweeps + 20k misses).
+Firms take a small steady cost over a tail that grows all day.
+
+**Gotcha:** erase moves other entries → never hold an `OrderEntry*` across an erase.
+
+### Q: Is an open-addressing hash map really how firms hold the order map (ref → order)?
+Public high-performance ITCH handlers use one of two layouts; ours is the first, and both are mainstream.
+
+| layout | how | catch |
+|---|---|---|
+| flat open-addressing map (ours; also Robin Hood / absl-style) | `ref & MASK` + linear probe, backward-shift erase | a probe or two; per-book, so refs per symbol are sparse anyway |
+| **direct array indexed by ref** (no hashing) | ITCH refs are day-unique and *increasing*, so `orders[ref]` is one load | sized for the **whole feed's** refs (100M+/day → GBs, TLB pressure); only works as ONE shared table across all books — which brings `book_id` back |
+
+Charles Cooper's open-source ITCH book does the second (`oid_map`: a `std::vector` indexed by
+order id, "no hashtable or trees"). Nasdaq's spec: refs are increasing, **not necessarily
+sequential**, so the array has holes.
+> ⚠️ verify: what a specific tier-1 firm uses is not public. Both layouts are defensible; the
+> choice is a measurement (probe cost vs. memory/TLB), not a rule.

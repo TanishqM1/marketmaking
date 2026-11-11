@@ -162,3 +162,27 @@ and fail the run if the count isn't 0.
 > ⚠️ verify: the malloc-count CI check is a common pattern, not a confirmed specific firm practice.
 
 See also: [bad_habits.md](bad_habits.md) — no `new`/`delete` on the hot path
+
+### Q: our architecture — where does the order map live?
+**One small order map per `Book`**, owned by the core that runs that symbol. Order state follows
+the sharding: whoever owns the book owns its orders.
+```
+locate_to_book[stock_locate] -> Book (one per traded symbol, static storage)
+                                 ├─ orders_  open-addressing map, ref & MASK, 65,536 × 32 B = 2 MB,
+                                 │           backward-shift erase (state/order_map.hpp)
+                                 └─ bids_/asks_ tick ladders + best cursors  (state/book.hpp)
+```
+
+| | per-book map (ours) | one shared array `orders[ref]` |
+|---|---|---|
+| fits | few symbols, sharded by core | one process maintaining **every** book on the feed |
+| memory | ∝ live orders (2 MB, L2-hot) | ∝ day's total refs (GBs, TLB/cache misses) |
+| lookup | hash + 1–2 probes | 1 load, but likely a cold one |
+| cores | private per core, no sharing | shared → cache-line bouncing or locks |
+
+Why ours: ITCH refs come from **one counter across all symbols**, so a single symbol's refs are
+sparse — a direct array per book would be mostly holes. A hash map sized to live orders stays hot.
+> ⚠️ verify: firm internals aren't public; "hot hash map beats cold direct array" is reasoned, not
+> measured — open question in `z_questions/technical/questons.md`.
+
+See also: [data_structures.md](data_structures.md) — backward-shift deletion, direct-array layout.

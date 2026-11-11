@@ -24,3 +24,5 @@ alignof(struct) = the largest alignof among its members
 sizeof(struct)  = rounded up to a multiple of alignof(struct)
 each member     = placed at an offset that's a multiple of its own alignment
 ```
+
+Order map: measure our per-book open-addressing map vs ONE shared direct array indexed by ITCH ref (orders[ref], with book_id back in the entry) — which wins on p99 for a real feed day?
