@@ -76,9 +76,28 @@ class Book
         }
     }
 
-    void execute(std::uint64_t ref, std::uint32_t qty) noexcept {}
+    void execute(std::uint64_t ref, std::uint32_t qty) noexcept
+    {
+        // order lookup from ordermap.
+        OrderEntry* order = orders_.find(ref);
+        // order not found
+        if (order == nullptr)
+        {
+            return;
+        }
+        reduce(order, qty);
+    }
 
-    void cancel(std::uint64_t ref, std::uint32_t cancelled_qty) noexcept {}
+    void cancel(std::uint64_t ref, std::uint32_t qty) noexcept
+    {
+        OrderEntry* order = orders_.find(ref);
+
+        if (order == nullptr)
+        {
+            return;
+        }
+        reduce(order, qty);
+    }
 
     void remove(std::uint64_t ref) {}
 
@@ -107,8 +126,75 @@ class Book
     std::uint16_t best_ask_ = NO_LEVEL;
     std::uint32_t low_{0}; // absolute tick at ladder index 0
 
-    void update_best_bid_down() {}
+    void reduce(OrderEntry* order, std::uint32_t qty) noexcept
+    {
+        // if we want to reduce for more than we have, well, just reduce
+        // with what we can (which is order.remaining).
+        if (qty > (*order).remaining)
+        {
+            qty = (*order).remaining;
+        }
 
-    void update_best_ask_up() {}
+        // parse side and idx.
+        mm::Side      side = (*order).side;
+        std::uint32_t idx  = (*order).abs_tick - low_;
+
+        // subtract the qty that we decided on (basically qty is min(qty, order.remaining))
+        (*order).remaining -= qty;
+        // if the order has nothing left, remove it from ordermap
+        if ((*order).remaining == 0)
+        {
+            orders_.erase(order);
+        }
+        // if the tick (idx) is not in our bids_ or asks_, then return (its out of window)
+        if (idx >= ARRAY_SIZE)
+        {
+            return;
+        }
+
+        // else, remove the qty as needed from our bids|asks array! in case the best ask/bid
+        // was affected, call the helper function to find the new one.
+        if (side == mm::Side::Buy)
+        {
+            bids_[idx] -= qty;
+            if (bids_[idx] == 0 && idx == best_bid_)
+            {
+                update_best_bid_down();
+            }
+        }
+        else
+        {
+            asks_[idx] -= qty;
+            if (asks_[idx] == 0 && idx == best_ask_)
+            {
+                update_best_ask_up();
+            }
+        }
+    }
+
+    void update_best_bid_down() noexcept
+    {
+        std::uint16_t idx = best_bid_;
+        while (idx > 0)
+        {
+            --idx;
+            if (bids_[idx] != 0)
+            {
+                best_bid_ = idx;
+                return;
+            }
+        }
+        best_bid_ = NO_LEVEL;
+    }
+
+    void update_best_ask_up() noexcept
+    {
+        std::uint16_t idx = best_ask_ + 1;
+        while (idx < ARRAY_SIZE && asks_[idx] == 0)
+        {
+            ++idx;
+        }
+        best_ask_ = idx;
+    }
 };
 } // namespace mm::state
