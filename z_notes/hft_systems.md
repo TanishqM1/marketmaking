@@ -139,3 +139,26 @@ after-cancel, rejects), and a per-stage latency breakdown — quote these as *re
 
 **Gotcha:** keep OS code behind `transport/` and no globals in the book, so Linux/bypass/sharding
 later is a swap, not a redesign.
+
+### Q: Avoid dynamic memory on the hot path; use it where throughput / dev speed matter?
+Mostly right. The line is **which path**, not latency vs throughput: the tick-to-trade thread never
+allocates after startup; everything else may.
+
+| where | allocate? | why |
+|---|---|---|
+| startup (even on the hot thread) | yes | size once, warm, `mlock` |
+| tick-to-trade thread, after start | **never** | judged on **worst case** (p99.9) |
+| pricing model / params | yes, **off** the hot path | publish results into a preallocated table the hot path reads |
+| research / backtests | yes | dev speed wins |
+
+Why malloc hurts the tail: fast path ~tens of ns, but `mmap` syscall / first-touch page fault ~µs,
+lock contention unbounded.
+
+**Gotcha:** throughput code also avoids malloc in inner loops (per-event malloc makes a backtest
+several times slower). It just tolerates the occasional slow allocation, because only the average matters.
+
+Firms: fixed arrays, object pools, ring buffers; some count `malloc` calls during a replay test
+and fail the run if the count isn't 0.
+> ⚠️ verify: the malloc-count CI check is a common pattern, not a confirmed specific firm practice.
+
+See also: [bad_habits.md](bad_habits.md) — no `new`/`delete` on the hot path

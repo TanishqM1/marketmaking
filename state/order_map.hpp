@@ -20,7 +20,7 @@ struct OrderEntry
 {
     std::uint64_t ref;       // key
     std::uint32_t remaining; // this order's remaining amount.
-    std::uint32_t abs_tick;  // price (tick index)
+    std::uint32_t abs_tick;  // absolute tick, not price
     std::uint16_t book_id;   // stock_locate
     mm::Side      side;      // buy or sell
     slotState     state;     // EMPTY / OCCUPIED / TOMBSTONE (0/1/2)

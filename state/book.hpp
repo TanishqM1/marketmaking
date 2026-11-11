@@ -4,7 +4,7 @@
 // need: order map
 // bid/ask arrays
 // best bid/ask indicies
-// low_ (low_ + N = high) so, low_ = center tick (base tick / 100)-2048
+// low_ (low_ + N = high) so, low_ = center tick (base price / 100)-2048
 // handlers from the market feed (add, execute, cancel, remove, replace)
 // empty state for best bid/ask (edge case)
 // helper functions to linear scan for best bid/ask
@@ -27,18 +27,22 @@ class Book
     explicit Book(std::uint32_t prev_close) noexcept
     {
         // centre the window on yesterday's close: $175.23 -> 1752300 -> tick 17523
-        std::uint32_t center = prev_close / TICK_SIZE;
+        // price in, tick out
+        std::uint32_t center_tick = prev_close / TICK_SIZE;
 
         // a cheap stock ($5 -> tick 500) would underflow to ~4 billion, so clamp to 0
-        if (center < ARRAY_SIZE / 2)
+        if (center_tick < ARRAY_SIZE / 2)
         {
             low_ = 0;
         }
         else
         {
-            low_ = center - ARRAY_SIZE / 2;
+            low_ = center_tick - ARRAY_SIZE / 2;
         }
     }
+
+    // ITCH price, not tick
+    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty);
 
     // qty == 0 -> that side is empty and `tick` is meaningless.
     [[nodiscard]] TickLevel best_bid() const noexcept
