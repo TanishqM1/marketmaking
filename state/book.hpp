@@ -42,7 +42,19 @@ class Book
     }
 
     // ITCH price, not tick
-    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty);
+    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty) noexcept {}
+
+    void execute(std::uint64_t ref, std::uint32_t qty) noexcept {}
+
+    void cancel(std::uint64_t ref, std::uint32_t cancelled_qty) noexcept {}
+
+    void remove(std::uint64_t ref) {}
+
+    // delete (remove) + add
+    void replace(std::uint64_t original_ref, std::uint64_t new_ref, std::uint32_t price,
+                 std::uint32_t qty) noexcept
+    {
+    }
 
     // qty == 0 -> that side is empty and `tick` is meaningless.
     [[nodiscard]] TickLevel best_bid() const noexcept
@@ -62,5 +74,9 @@ class Book
     std::uint16_t best_bid_ = NO_LEVEL;
     std::uint16_t best_ask_ = NO_LEVEL;
     std::uint32_t low_{0}; // absolute tick at ladder index 0
+
+    void update_best_bid_down() {}
+
+    void update_best_ask_up() {}
 };
 } // namespace mm::state

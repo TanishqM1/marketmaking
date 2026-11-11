@@ -241,3 +241,19 @@ f(8080);                  // ditto, if f takes a UDP_Receiver
 Matters most when the constructor has side effects — `UDP_Receiver` opens a socket and binds a
 port, and you don't want that happening because a number was passed where an object was expected.
 Default to `explicit` on every single-argument constructor.
+
+### Q: const declaration on a funciton is mostly for reads
+Yes — `const` after a member function = **"does not modify the object."** Inside it every member is
+read-only; a write is a compile error.
+
+| function | `const`? |
+|---|---|
+| `best_bid()` / `best_ask()` — just read | ✅ |
+| `add` / `remove` / scans — write ladder, map, cursors | ❌ won't compile |
+
+**Why firms care:** a `const Book&` can only call `const` functions. Hand the strategy a
+`const Book&` → it can read the touch but can never move a cursor or corrupt the ladder — the
+compiler enforces it, zero runtime cost.
+
+**Gotcha:** `const` is for correctness, not speed — it doesn't make code faster. Speed is `noexcept`
+/ inlining. And `const` ≠ `constexpr` (that one means "computable at compile time").
