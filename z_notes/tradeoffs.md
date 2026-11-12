@@ -70,3 +70,41 @@ probe lengths); it's often paired with backward shift, hence the mix-up. At our 
 
 See also: [data_structures.md](data_structures.md) — backward-shift deletion, direct-array layout;
 [hft_systems.md](hft_systems.md) — where the order map lives.
+
+---
+
+### Q: Best bid/ask scan — 1-level bitmap, or 2-level bitmap with a summary word?
+
+**Background.** When the best bid (or ask) level empties, the book must find the next non-empty
+level. The old scan read `bids_[]` one `uint32` at a time: up to 4,096 loads / 16 KB / 128 cache
+lines on a thin book (e.g. best at 3000, next at 10). That's a p99.9 spike on one message.
+
+**The fix both options share:** a bitmap per side, 1 bit per level (`1` = level has qty).
+4,096 levels / 64 bits = **64 words** (`WORDS`), 512 B. One `word == 0` compare checks 64 levels;
+`clz` (count leading zeros, highest 1) / `ctz` (count trailing zeros, lowest 1) finds the exact
+level inside a word in one instruction. Search starts in the old best's word — the cursor
+invariant (nothing better than best is set) means no masking needed.
+
+| | 1-level (ours) | 2-level (+ summary) |
+|---|---|---|
+| extra state | none | 1 `uint64`: bit w = "word w non-empty" |
+| find the word | **loop**, 64 levels per step | one `clz` on the summary |
+| common case (next level ≤ 64 ticks) | 1 load + `clz` | 2 **dependent** loads + 2 `clz` |
+| worst case | 64 compares, 4 lines | 2 loads, always |
+| per add / per emptying | 1 OR / 1 AND | 2 ORs / AND + cmp + shift + AND |
+
+Neither is "always faster": 2-level is constant-time (predictable tail), 1-level is cheaper in
+the common case and on every message's maintenance.
+
+**Decision:** keep **1-level** ([state/book.hpp](../state/book.hpp) `update_best_bid_down` /
+`update_best_ask_up`). Liquid top-500 names almost always have the next level within 64 ticks →
+the loop stops on the first word. The big win was 16 KB → 512 B; 64 → 2 compares is small.
+> ⚠️ unmeasured. Firms decide this with data, not argument: replay real ITCH, histogram words
+> visited per scan. If the tail is fat (pre-market, the open, halts, cheap stocks where 64¢ is a
+> big % move), bring the summary back.
+
+**Gotcha:** `clz(0)` / `ctz(0)` = 64 → `63 - 64` wraps to a garbage index. Only call them on a
+word already known non-zero.
+
+**Optional:** a guard word `ask_bits_[WORDS]` with bit 0 always set lets the ask loop drop its
+`word < WORDS` check (it lands on 4096 = `NO_LEVEL`). Bids can't — there's no index −1.

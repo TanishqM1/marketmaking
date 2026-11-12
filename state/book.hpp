@@ -25,6 +25,7 @@ class Book
     static constexpr std::uint16_t ARRAY_SIZE = 4096;
     static constexpr std::uint16_t NO_LEVEL   = ARRAY_SIZE;
     static constexpr std::uint32_t TICK_SIZE  = 100; // $0.01 in ITCH's 4-decimal price units
+    static_assert(UINT32_MAX / TICK_SIZE < (std::uint32_t{1} << OrderEntry::TICK_BITS));
     static constexpr std::uint32_t WORDS =
         ARRAY_SIZE /
         64; // largest CPU-fitting integer, so we fit out bitmap into these chunks to process them

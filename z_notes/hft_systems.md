@@ -186,3 +186,37 @@ sparse — a direct array per book would be mostly holes. A hash map sized to li
 > measured — open question in `z_questions/technical/questons.md`.
 
 See also: [data_structures.md](data_structures.md) — backward-shift deletion, direct-array layout.
+
+### Q: do quant firms use hugepages
+Yes — standard on every latency-critical Linux box. Big pages = fewer address translations = no
+TLB misses on big tables, and they never get swapped out.
+
+**TLB** (translation lookaside buffer) = the CPU's small cache of "virtual page → physical page".
+Miss it and the CPU walks the page table in RAM *before* it can even start the real load.
+| page size | pages to cover 500 MB (our 500 books × 1 MB order maps) | fits in TLB (~1–2k entries)? |
+|---|---|---|
+| 4 KB (Linux default) | ~128,000 | no → page walks on random lookups |
+| 2 MB | 250 | yes |
+| 1 GB | 1 | yes |
+
+**Why firms use them:**
+- **No TLB misses** on order maps, books, ring buffers — random probes stay ns, not page-walk + miss.
+- **No swapping** — explicit hugepages (HugeTLB) stay in RAM, so the OS can't page them out mid-open.
+- **Kernel bypass needs them** — DPDK requires them for the NIC↔app zero-copy ring buffers;
+  Onload/ExaNIC use them for packet buffers too. > ⚠️ verify: "require" is true for DPDK, optional for the others
+
+**How firms set them up:**
+- **Explicit HugeTLB, THP off.** THP (transparent huge pages) lets the kernel promote pages on its
+  own; its background thread (`khugepaged`) compacts memory at random times → latency spikes.
+  Firms turn it off (or `madvise`-only) and allocate hugepages deliberately.
+- **Reserve at boot** — `hugepagesz=1G hugepages=N` on the kernel command line, before RAM fragments
+  (1 GB pages need contiguous physical memory, hard to find later).
+- **Allocate once at startup** — `mmap(MAP_HUGETLB)`, never on the hot path. Same rule as all memory.
+- **NUMA-local** — reserve on the socket where the trading thread and NIC live; the other socket's
+  RAM is slower.
+
+**Our project:** flagged by review for `OrderMap::slots_` (1 MB/book). Can't do it on macOS Apple
+Silicon (no user-controllable huge pages ⚠️ verify) → a Linux-only, production step.
+
+See also: [data_structures.md](data_structures.md) — hugepages for the order table;
+[cache.md](cache.md) — iTLB and hugepages for code.
