@@ -1,4 +1,6 @@
 #pragma once
+#include <bit>
+
 #include "state/order_map.hpp"
 
 // need: order map
@@ -23,6 +25,9 @@ class Book
     static constexpr std::uint16_t ARRAY_SIZE = 4096;
     static constexpr std::uint16_t NO_LEVEL   = ARRAY_SIZE;
     static constexpr std::uint32_t TICK_SIZE  = 100; // $0.01 in ITCH's 4-decimal price units
+    static constexpr std::uint32_t WORDS =
+        ARRAY_SIZE /
+        64; // largest CPU-fitting integer, so we fit out bitmap into these chunks to process them
 
     explicit Book(std::uint32_t prev_close) noexcept
     {
@@ -61,6 +66,7 @@ class Book
         if (side == mm::Side::Buy)
         {
             bids_[idx] += qty;
+            set_bit(bid_bits_, idx);
             if (idx > best_bid_ || best_bid_ == NO_LEVEL)
             {
                 best_bid_ = static_cast<std::uint16_t>(idx);
@@ -69,6 +75,7 @@ class Book
         else
         {
             asks_[idx] += qty;
+            set_bit(ask_bits_, idx);
             if (idx < best_ask_)
             {
                 best_ask_ = static_cast<std::uint16_t>(idx);
@@ -145,6 +152,8 @@ class Book
     std::uint16_t best_bid_ = NO_LEVEL;
     std::uint16_t best_ask_ = NO_LEVEL;
     std::uint32_t low_{0}; // absolute tick at ladder index 0
+    std::uint64_t bid_bits_[WORDS]{};
+    std::uint64_t ask_bits_[WORDS]{};
 
     void reduce(OrderEntry* order, std::uint32_t qty) noexcept
     {
@@ -177,44 +186,69 @@ class Book
         if (side == mm::Side::Buy)
         {
             bids_[idx] -= qty;
-            if (bids_[idx] == 0 && idx == best_bid_)
+            if (bids_[idx] == 0)
             {
-                update_best_bid_down();
+                clear_bit(bid_bits_, idx);
+                if (idx == best_bid_)
+                {
+                    update_best_bid_down();
+                }
             }
         }
         else
         {
             asks_[idx] -= qty;
-            if (asks_[idx] == 0 && idx == best_ask_)
+            if (asks_[idx] == 0)
             {
-                update_best_ask_up();
+                clear_bit(ask_bits_, idx);
+                if (idx == best_ask_)
+                {
+                    update_best_ask_up();
+                }
             }
         }
+    }
+
+    static void set_bit(std::uint64_t (&bits)[WORDS], std::uint32_t idx) noexcept
+    {
+        bits[idx / 64] |= std::uint64_t{1} << (idx % 64);
+    }
+
+    static void clear_bit(std::uint64_t (&bits)[WORDS], std::uint32_t idx) noexcept
+    {
+        bits[idx / 64] &= ~(std::uint64_t{1} << (idx % 64));
     }
 
     void update_best_bid_down() noexcept
     {
-        std::uint16_t idx = best_bid_;
-        while (idx > 0)
+        std::uint32_t word = best_bid_ / 64;
+        while (bid_bits_[word] == 0)
         {
-            --idx;
-            if (bids_[idx] != 0)
+            if (word == 0)
             {
-                best_bid_ = idx;
+                best_bid_ = NO_LEVEL;
                 return;
             }
+            --word;
         }
-        best_bid_ = NO_LEVEL;
+        std::uint32_t bit = 63 - static_cast<std::uint32_t>(std::countl_zero(bid_bits_[word]));
+        best_bid_         = static_cast<std::uint16_t>(word * 64 + bit);
     }
 
     void update_best_ask_up() noexcept
     {
-        std::uint16_t idx = best_ask_ + 1;
-        while (idx < ARRAY_SIZE && asks_[idx] == 0)
+        std::uint32_t word = best_ask_ / 64;
+        while (word < WORDS && ask_bits_[word] == 0)
         {
-            ++idx;
+            ++word;
         }
-        best_ask_ = idx;
+        if (word == WORDS)
+        {
+            best_ask_ = NO_LEVEL;
+            return;
+        }
+        std::uint32_t bit = static_cast<std::uint32_t>(std::countr_zero(ask_bits_[word]));
+        best_ask_         = static_cast<std::uint16_t>(word * 64 + bit);
     }
 };
 } // namespace mm::state
