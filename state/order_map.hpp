@@ -7,25 +7,23 @@
 namespace mm::state
 {
 
-// must be above the struct that uses it..
-enum class slotState : std::uint8_t
-{
-    // 0/1
-    EMPTY,
-    OCCUPIED
-};
-
 struct OrderEntry
 {
-    std::uint64_t ref;       // key
-    std::uint32_t remaining; // this order's remaining amount.
-    std::uint32_t abs_tick;  // absolute tick, not price
-    mm::Side      side;      // buy or sell
-    slotState     state;     // EMPTY / OCCUPIED (0/1)
-    std::uint8_t  pad[14];   // PADDING to be compliant with cache lines.
+    static constexpr std::uint32_t TICK_BITS = 26;
+
+    std::uint64_t ref;
+    std::uint32_t remaining;
+    // this is assigning BITS, not BYTES
+    // abs_tick = 26 bits, side = 1 bit, occupied = 1 bit. total is 28 bits, which pads to 32 bits,
+    // which fits in 4 bytes
+    std::uint32_t abs_tick : TICK_BITS;
+    mm::Side      side : 1;
+    std::uint32_t occupied : 1;
 };
 
-static_assert(sizeof(OrderEntry) == 32);
+static_assert(sizeof(OrderEntry) == 16);
+static_assert(static_cast<std::uint8_t>(mm::Side::Sell) == 1);
+static_assert(OrderEntry{}.occupied == 0);
 
 class OrderMap
 {
@@ -47,7 +45,7 @@ class OrderMap
     // essentially, past .70, when we are doing multple lookups. It also has to be
     // a multiple of 2.
 
-    // 2^(16) uses 2MB, and stores all 32,000 possible orders ALL in L2 Cache!
+    // 2^(16) slots x 16 B = 1MB, room for ~32,000 live orders at 0.5 load, ALL in L2 Cache!
     // TODO make this part dynamic, so we can chose different capacties at compile time.
 
     // static = class owns this variable, ONE copy.
@@ -78,16 +76,16 @@ class OrderMap
 
         for (std::size_t i = 0; i < CAPACITY; i++)
         {
-            if ((slots_[idx].state == slotState::OCCUPIED) && (slots_[idx].ref == e.ref))
-            {
-                return false;
-            }
-            if (slots_[idx].state == slotState::EMPTY)
+            if (!slots_[idx].occupied)
             {
                 count_++;
-                slots_[idx]       = e;
-                slots_[idx].state = slotState::OCCUPIED;
+                slots_[idx]          = e;
+                slots_[idx].occupied = 1;
                 return true;
+            }
+            if (slots_[idx].ref == e.ref)
+            {
+                return false;
             }
             // otherwise increment idx!
             idx = (idx + 1) & MASK;
@@ -146,7 +144,7 @@ class OrderMap
         for (std::size_t i = 0; i < CAPACITY; i++)
         {
             j = (j + 1) & MASK;
-            if (slots_[j].state == slotState::EMPTY)
+            if (!slots_[j].occupied)
             {
                 break;
             }
@@ -157,7 +155,7 @@ class OrderMap
                 hole         = j;
             }
         }
-        slots_[hole].state = slotState::EMPTY;
+        slots_[hole] = OrderEntry{};
         count_--;
     }
 
@@ -171,12 +169,12 @@ class OrderMap
         for (std::size_t i = 0; i < CAPACITY; i++)
         {
             // this means it has NOT been touched, the ref is NOT past this point.
-            if (slots_[idx].state == slotState::EMPTY)
+            if (!slots_[idx].occupied)
             {
                 return CAPACITY;
             }
             // found it!
-            if ((slots_[idx].state == slotState::OCCUPIED) && (slots_[idx].ref == ref))
+            if (slots_[idx].ref == ref)
             {
                 return idx;
             }

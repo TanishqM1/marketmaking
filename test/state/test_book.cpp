@@ -3,7 +3,10 @@
 // Covers the constructor, best_bid/best_ask, add, execute, cancel, the scans (driven through
 // execute/cancel, since they're private), remove and replace.
 
+#include <cstdint>
 #include <cstdio>
+#include <random>
+#include <vector>
 
 #include "state/book.hpp"
 
@@ -28,7 +31,7 @@ int failures = 0;
 using mm::Side;
 using mm::state::Book;
 
-// Books are ~2 MB (the order map), so they live in static storage, never on the stack --
+// Books are ~1 MB (the order map), so they live in static storage, never on the stack --
 // same as production. One per test so no state leaks between them.
 
 void test_new_book_is_empty()
@@ -322,6 +325,143 @@ void test_replace_into_and_out_of_window()
 static_assert(Book::NO_LEVEL == Book::ARRAY_SIZE);
 static_assert((Book::ARRAY_SIZE & (Book::ARRAY_SIZE - 1)) == 0, "ARRAY_SIZE must be a power of two");
 
+// ---- bitmap ---------------------------------------------------------------
+// Book{50000} -> low_ = 0, so ladder index == tick == price / 100.
+
+void test_bid_scan_jumps_large_gap()
+{
+    static Book b{50000};
+    b.add(1, Side::Buy, 3000 * Book::TICK_SIZE, 10);
+    b.add(2, Side::Buy, 10 * Book::TICK_SIZE, 20);
+    b.remove(1);
+    CHECK_EQ(b.best_bid().tick, 10u);
+    CHECK_EQ(b.best_bid().qty, 20u);
+}
+
+void test_ask_scan_jumps_large_gap()
+{
+    static Book b{50000};
+    b.add(1, Side::Sell, 10 * Book::TICK_SIZE, 10);
+    b.add(2, Side::Sell, 3000 * Book::TICK_SIZE, 20);
+    b.remove(1);
+    CHECK_EQ(b.best_ask().tick, 3000u);
+    CHECK_EQ(b.best_ask().qty, 20u);
+}
+
+void test_scan_crosses_word_boundary()
+{
+    // 63 and 64 live in different 64-bit words
+    static Book b{50000};
+    b.add(1, Side::Buy, 64 * Book::TICK_SIZE, 10);
+    b.add(2, Side::Buy, 63 * Book::TICK_SIZE, 10);
+    b.add(3, Side::Sell, 127 * Book::TICK_SIZE, 10);
+    b.add(4, Side::Sell, 128 * Book::TICK_SIZE, 10);
+    b.remove(1);
+    b.remove(3);
+    CHECK_EQ(b.best_bid().tick, 63u);
+    CHECK_EQ(b.best_ask().tick, 128u);
+}
+
+void test_emptied_non_best_level_is_skipped_later()
+{
+    // 200 empties while 300 is best; when 300 empties the scan must land on 100, not 200
+    static Book b{50000};
+    b.add(1, Side::Buy, 100 * Book::TICK_SIZE, 10);
+    b.add(2, Side::Buy, 200 * Book::TICK_SIZE, 10);
+    b.add(3, Side::Buy, 300 * Book::TICK_SIZE, 10);
+    b.remove(2);
+    b.remove(3);
+    CHECK_EQ(b.best_bid().tick, 100u);
+    CHECK_EQ(b.best_bid().qty, 10u);
+}
+
+void test_word_empties_then_refills()
+{
+    // emptying the only level in a word, then refilling it, must make the word findable again
+    static Book b{50000};
+    b.add(1, Side::Buy, 10 * Book::TICK_SIZE, 10);
+    b.add(2, Side::Buy, 700 * Book::TICK_SIZE, 10);
+    b.remove(1);
+    b.add(3, Side::Buy, 20 * Book::TICK_SIZE, 5);
+    b.remove(2);
+    CHECK_EQ(b.best_bid().tick, 20u);
+    CHECK_EQ(b.best_bid().qty, 5u);
+}
+
+void test_random_ops_match_linear_scan()
+{
+    // reference: plain per-level quantities, best found by brute-force scan
+    static Book b{50000};
+    std::vector<std::uint32_t> ref_bids(Book::ARRAY_SIZE, 0);
+    std::vector<std::uint32_t> ref_asks(Book::ARRAY_SIZE, 0);
+    struct Live
+    {
+        std::uint64_t ref;
+        Side          side;
+        std::uint32_t tick;
+        std::uint32_t remaining;
+    };
+    std::vector<Live> live;
+    std::mt19937_64   rng{42};
+    std::uint64_t     next_ref = 1;
+
+    for (int op = 0; op < 200000; ++op)
+    {
+        std::uint64_t r = rng();
+        if (live.empty() || (live.size() < 2000 && (r % 3) != 0))
+        {
+            Side          side = (r >> 8) % 2 ? Side::Buy : Side::Sell;
+            std::uint32_t tick = static_cast<std::uint32_t>((r >> 16) % Book::ARRAY_SIZE);
+            std::uint32_t qty  = static_cast<std::uint32_t>((r >> 32) % 500) + 1;
+            b.add(next_ref, side, tick * Book::TICK_SIZE, qty);
+            (side == Side::Buy ? ref_bids : ref_asks)[tick] += qty;
+            live.push_back({next_ref++, side, tick, qty});
+        }
+        else
+        {
+            std::size_t   i    = (r >> 8) % live.size();
+            Live&         o    = live[i];
+            std::uint32_t qty  = (r >> 40) % 2 ? o.remaining : static_cast<std::uint32_t>((r >> 20) % o.remaining) + 1;
+            b.execute(o.ref, qty);
+            (o.side == Side::Buy ? ref_bids : ref_asks)[o.tick] -= qty;
+            o.remaining -= qty;
+            if (o.remaining == 0)
+            {
+                live[i] = live.back();
+                live.pop_back();
+            }
+        }
+
+        std::uint32_t want_bid = Book::NO_LEVEL;
+        for (std::uint32_t t = Book::ARRAY_SIZE; t-- > 0;)
+        {
+            if (ref_bids[t] != 0)
+            {
+                want_bid = t;
+                break;
+            }
+        }
+        std::uint32_t want_ask = Book::NO_LEVEL;
+        for (std::uint32_t t = 0; t < Book::ARRAY_SIZE; ++t)
+        {
+            if (ref_asks[t] != 0)
+            {
+                want_ask = t;
+                break;
+            }
+        }
+        std::uint32_t got_bid = b.best_bid().tick;
+        std::uint32_t got_ask = b.best_ask().tick;
+        if (got_bid != want_bid || got_ask != want_ask)
+        {
+            CHECK_EQ(got_bid, want_bid);
+            CHECK_EQ(got_ask, want_ask);
+            std::printf("  diverged at op %d\n", op);
+            return;
+        }
+    }
+}
+
 int main()
 {
     test_new_book_is_empty();
@@ -350,6 +490,12 @@ int main()
     test_replace_new_ref_live_old_ref_dead();
     test_replace_unknown_ref_is_noop();
     test_replace_into_and_out_of_window();
+    test_bid_scan_jumps_large_gap();
+    test_ask_scan_jumps_large_gap();
+    test_scan_crosses_word_boundary();
+    test_emptied_non_best_level_is_skipped_later();
+    test_word_empties_then_refills();
+    test_random_ops_match_linear_scan();
 
     if (failures == 0)
     {

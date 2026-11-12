@@ -86,7 +86,7 @@ continues through, needing an occasional rehash) or backward-shift deletion.
 ### Load factor — why ≤ 0.5
 `used_ / CAPACITY` high → longer probes, for **both** operations:
 ```
-insert  probe until an EMPTY or TOMBSTONE slot to write into
+insert  probe until an EMPTY slot to write into
 find    probe until the ref matches, or EMPTY
 ```
 
@@ -97,8 +97,8 @@ traverse all of it:
 0.70 -> 2.2            0.95 -> 10.5
 ```
 
-**The real cliff is the cache line, not the probe count.** At 32-byte entries, 4 fit per 128-byte
-line — probes 1-4 are free, probe 5 is a new miss:
+**The real cliff is the cache line, not the probe count.** At 16-byte entries (ours), 8 fit per
+128-byte line — probes 1-8 are free, probe 9 is a new miss (was 4 per line at the old 32 B):
 ```
 1.5 probes  ~ one line     ~200 cycles
 5.5 probes  ~ two lines    ~400
@@ -118,7 +118,8 @@ bound the probe count in release with a counter on the give-up path.
 "1.5 probes average" means usually one slot, sometimes two.
 
 ### Where in the cache line your home slot lands
-`ref & MASK` gives any slot uniformly, so with 4 slots per 128-byte line only **1 in 4** home slots
+`ref & MASK` gives any slot uniformly. *Example below uses 4 slots per line (the old 32 B entry);
+ours is now 16 B = 8 per line, so the odds halve.* With 4 per line only **1 in 4** home slots
 sits at a line start:
 ```
 slot:  0    1    2    3  │  4    5    6    7  │  8 ...
@@ -127,7 +128,7 @@ slot:  0    1    2    3  │  4    5    6    7  │  8 ...
 Home slot 6 is third in its line — probing 7 is free, probing 8 **crosses into a new line**.
 
 Combined with load factor: at 0.5, about half of lookups hit the home slot with no probe at all. So
-the unlucky case is roughly `0.5 × 0.25` ≈ **12% of lookups cross a line.**
+the unlucky case is roughly `0.5 × 0.25` ≈ **12% of lookups cross a line** (≈ 6% at 8 per line).
 
 **Bucketizing is the guaranteed fix** — round the home index down to the line start and probe only
 within the group:
@@ -160,13 +161,13 @@ bytes and co-resides in cache easily.
 
 ### Memory is never freed
 The array is allocated **once at startup** and never grows, shrinks, or frees. Erasing an order
-just changes its slot's `state` field:
+just clears its slot's 1-bit `occupied` field:
 ```
-EMPTY       never used        -> probing STOPS
-OCCUPIED    live order
-TOMBSTONE   erased, reusable  -> probing CONTINUES
+occupied = 0   empty             -> probing STOPS
+occupied = 1   live order
 ```
-(Backward-shift deletion removes the need for TOMBSTONE entirely — just EMPTY/OCCUPIED.)
+(Was a 3-state enum with TOMBSTONE; backward-shift deletion removed TOMBSTONE, then the remaining
+EMPTY/OCCUPIED fit in one bit-field bit.)
 
 ⚠ **Insert can't stop at the first reusable slot** or it creates a duplicate of a ref already
 living further down the chain:
@@ -181,7 +182,7 @@ Get it wrong and `erase` removes one copy while `find` keeps returning the stale
 ### Q: backward-shift deletion (the tombstone fix)
 `erase` now empties the slot and slides later entries in the cluster back into the gap (never
 before their own home slot), so the table never fills with dead tombstones and every probe stays
-short forever — [state/order_map.hpp:143](../state/order_map.hpp) `shift_delete`.
+short forever — [state/order_map.hpp:141](../state/order_map.hpp) `shift_delete`.
 
 **Tradeoff:** *eager* cleanup (tombstones were the lazy one — mark dead, never clean). Pay a little
 on every erase — shift only the rest of *this cluster*, stop at the first EMPTY (usually 0–1

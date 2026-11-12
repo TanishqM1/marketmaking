@@ -49,12 +49,7 @@ using mm::state::OrderMap;
 OrderEntry make_entry(std::uint64_t ref, std::uint32_t remaining = 100, std::uint32_t tick = 17525,
                       mm::Side side = mm::Side::Buy)
 {
-    OrderEntry e{};
-    e.ref       = ref;
-    e.remaining = remaining;
-    e.abs_tick  = tick;
-    e.side      = side;
-    return e;
+    return OrderEntry{.ref = ref, .remaining = remaining, .abs_tick = tick, .side = side};
 }
 
 // Two refs that land on the same slot: differ by exactly CAPACITY, so
@@ -402,26 +397,64 @@ void test_random_ops_match_reference()
 
 } // namespace
 
+void test_ref_zero_is_a_valid_key()
+{
+    // ITCH can send ref 0, so EMPTY lives in its own bit, not in ref == 0
+    OrderMap m;
+    CHECK(m.find(0) == nullptr);
+    CHECK(m.insert(make_entry(0, 77)));
+    CHECK(m.find(0) != nullptr);
+    if (m.find(0))
+        CHECK_EQ(m.find(0)->remaining, 77u);
+    CHECK(!m.insert(make_entry(0, 5))); // duplicate
+    m.erase(std::uint64_t{0});
+    CHECK(m.find(0) == nullptr);
+    CHECK_EQ(m.size(), 0u);
+}
+
+void test_packed_fields_round_trip()
+{
+    // the largest possible tick (UINT32_MAX price / 100) must not bleed into the side/occupied bits
+    constexpr std::uint32_t max_tick = 0xFFFFFFFFu / 100;
+    OrderMap                m;
+    CHECK(m.insert(make_entry(1, 10, max_tick, mm::Side::Sell)));
+    CHECK(m.insert(make_entry(2, 10, max_tick, mm::Side::Buy)));
+    CHECK(m.insert(make_entry(3, 10, 0, mm::Side::Sell)));
+    OrderEntry* a = m.find(1);
+    OrderEntry* b = m.find(2);
+    OrderEntry* c = m.find(3);
+    CHECK(a && b && c);
+    if (!(a && b && c))
+        return;
+    CHECK_EQ(a->abs_tick, max_tick);
+    CHECK(a->side == mm::Side::Sell);
+    CHECK_EQ(b->abs_tick, max_tick);
+    CHECK(b->side == mm::Side::Buy);
+    CHECK_EQ(c->abs_tick, 0u);
+    CHECK(c->side == mm::Side::Sell);
+    CHECK(a->occupied && b->occupied && c->occupied);
+}
+
 // ---------------------------------------------------------------------------
 // Layout — compile time, zero cost, catches a bad entry size at BUILD time.
 // ---------------------------------------------------------------------------
 namespace mm::state
 {
-// 128-byte cache line / 32-byte entry = exactly 4 per line, never straddling.
-// If this fires, add padding to OrderEntry.
-static_assert(sizeof(OrderEntry) == 32, "OrderEntry must divide the 128B cache line");
+// 128-byte cache line / 16-byte entry = exactly 8 per line, never straddling.
+static_assert(sizeof(OrderEntry) == 16, "OrderEntry must divide the 128B cache line");
 static_assert(128 % sizeof(OrderEntry) == 0, "entries would straddle cache lines");
 static_assert(alignof(OrderEntry) <= 128);
 
 // A non-power-of-two CAPACITY makes `ref & MASK` silently wrong rather than failing.
 static_assert((OrderMap::CAPACITY & OrderMap::MASK) == 0, "CAPACITY must be a power of two");
 static_assert(OrderMap::MASK == OrderMap::CAPACITY - 1);
-static_assert(static_cast<std::uint8_t>(slotState::EMPTY) == 0,
-              "zero-init of slots_ depends on EMPTY being 0");
+static_assert(OrderEntry{}.occupied == 0, "zero-init of slots_ depends on 0 meaning EMPTY");
 } // namespace mm::state
 
 int main()
 {
+    test_ref_zero_is_a_valid_key();
+    test_packed_fields_round_trip();
     test_empty_map_finds_nothing();
     test_insert_then_find();
     test_find_returns_mutable_pointer();

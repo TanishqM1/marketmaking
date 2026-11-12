@@ -106,7 +106,7 @@ spills back to DRAM like the others. "Never leaves cache" is true only if the **
 
 **Example** — why "make the table huge so the load factor is tiny" backfires:
 ```
-2 MB table,   16 MB L2   -> fits. nothing evicts. effectively always cached.
+1 MB table,   16 MB L2   -> fits. nothing evicts. effectively always cached.
 256 MB table, 32 MB L3   -> thrashes. most lookups miss to DRAM anyway.
 ```
 You'd trade short probe chains for a guaranteed DRAM miss on every lookup. Size the table to
@@ -276,12 +276,12 @@ Firms run x86-64 Linux, so **the real target is 64**. Most advice you read says 
 What that changes:
 | | M4 (128B) | Xeon (64B) |
 |---|---|---|
-| `OrderEntry` @ 32B | 4 per line | **2** per line |
+| `OrderEntry` @ 16B | 8 per line | **4** per line |
 | price levels @ 4B | 32 per line | **16** per line |
 | `alignas` value | 128 | **64** |
-| probes before crossing a line | 4 | **2** |
+| probes before crossing a line | 8 | **4** |
 
-So probe-chain math gets *tighter* on the real target — probe 3 crosses a line instead of probe 5,
+So probe-chain math gets *tighter* on the real target — probe 5 crosses a line instead of probe 9,
 which makes the ≤0.5 load factor matter more, not less.
 
 **Make it a named constant** (`constexpr std::size_t CACHE_LINE = 128;`) so porting is one line
@@ -421,16 +421,16 @@ ways, then configure so nothing else can use them. Exposed via Linux `resctrl`. 
 ### Working set budget — ours vs a real firm's
 ```
 ours                                        a firm's raw problem
-order map       ~2 MB                       8000 symbols, ~4M live orders x 32 B = 128 MB
+order map       ~1 MB                       8000 symbols, ~4M live orders x 16 B = 64 MB
 ladders         ~128 KB                     (fits in NO cache)
 recv buffer     ~1.4 KB
 hot code        a few KB
                 ───────
-                ~2.2 MB  vs 16 MB L2
+                ~1.2 MB  vs 16 MB L2
 ```
 Two things close that gap, and both are design decisions:
 - **Filter to subscribed symbols.** Trading 50 names means ignoring 7,950. ~20k live orders =
-  **640 KB**. The `bool[65536]` subscribed filter is a cache-residency tool as much as a CPU one.
+  **320 KB**. The `bool[65536]` subscribed filter is a cache-residency tool as much as a CPU one.
 - **Shard by symbol across cores.** Each core owns a symbol group, so each map is a fraction of the
   total. **This is the real reason sharding matters** — not throughput, but making each shard's
   working set fit in cache.
@@ -469,13 +469,13 @@ trying to improve its locality.
 |---|---|---|
 | incoming receive buffer | 64 KB alloc, **~1.4 KB hot** | 64 KB because max UDP payload is 65,507 — sized so truncation is impossible. Only ever holds **one** datagram, so the hot part is ~11 cache lines. Permanently dirty and permanently resident. |
 | decode locals (parsing) | **0** | Never in memory at all. SROA splits the `Fields` structs into registers; nothing is stored. |
-| **ref → order map** | **2 MB** | 65,536 slots × 32 B. Sized at ~2× peak live orders so load stays ≤0.5. **The only random-access structure → the only real miss source.** |
+| **ref → order map** | **1 MB** | 65,536 slots × 16 B. Sized at ~2× peak live orders so load stays ≤0.5. **The only random-access structure → the only real miss source.** |
 | ladders (bid + ask) | **16 KB per symbol** | 2 sides × ~2,000 ticks × 4 B. Sequential scan near the touch, so it stays hot. |
 
-⚠ The ladders are **much** smaller than the map per symbol — 16 KB vs 2 MB, not "a bit less." But
+⚠ The ladders are **much** smaller than the map per symbol — 16 KB vs 1 MB, not "a bit less." But
 they scale differently:
 ```
-order map  scales with LIVE ORDERS     -> 2 MB regardless of symbol count
+order map  scales with LIVE ORDERS     -> 1 MB regardless of symbol count
 ladders    scale with SYMBOLS x WINDOW -> 50 symbols x 16 KB = 800 KB
 ```
 So the tick *window* matters once multiplied: 2,000 × 50 = 800 KB, but 16,384 × 50 = 6.4 MB.

@@ -145,6 +145,13 @@ void test_decode_add_order()
     CHECK_EQ(f.shares, 500u);
     CHECK_EQ(f.price, 1752500u); // integer, 4 implied decimals. never a float.
     CHECK(f.side == mm::Side::Buy);
+
+    msg[19] = std::byte{'S'};
+    CHECK(mm::itch::detail::decode_add_order(msg).side == mm::Side::Sell);
+
+    // a byte that is neither B nor S still yields a defined side (Buy), never garbage
+    msg[19] = std::byte{'X'};
+    CHECK(mm::itch::detail::decode_add_order(msg).side == mm::Side::Buy);
 }
 
 // (D) Order Delete, 19 bytes. One field -- which is the point: the quantity to
