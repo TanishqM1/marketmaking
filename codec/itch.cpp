@@ -118,12 +118,6 @@ void decode_packet(std::span<const std::byte> packet)
     // 24 bytes, over the 16-byte register-return limit on AAPCS64, and no member ordering
     // gets it under (8+4+4+1 = 17 minimum). So if it is ever out-of-lined we pay a hidden
     // sret stack round-trip per message. Verify with -Rpass-missed=inline.
-    // TODO: the length check and `offset +=` are duplicated in all 7 cases. Once
-    // length_for(type) exists over all ~20 ITCH types, hoist both above the switch:
-    // one bounds check, one advance, no case can forget, and a length of 0 becomes the
-    // single "unknown type, cannot frame" bail -- which also fixes the default: hang.
-    // TODO: put [[unlikely]] on the truncation branches and [[gnu::cold]] on the error
-    // reporter, so the never-taken paths stop occupying I-cache next to the decoders.
 
     while (offset < packet.size())
     {
@@ -255,10 +249,6 @@ void decode_packet(std::span<const std::byte> packet)
                 offset += OrderReplace::length;
                 break;
             }
-
-            default:
-
-                break;
         }
     }
 }
