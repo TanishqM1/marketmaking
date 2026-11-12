@@ -78,3 +78,4 @@ flowchart LR
     classDef planned stroke-dasharray: 5 5,color:#888
     class session,strategy,risk,out,exchange planned
 ```
+Wire format reference: [z_notes/market_data.md](z_notes/market_data.md). Design decisions: [z_notes/decisions.md](z_notes/decisions.md).

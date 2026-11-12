@@ -1,6 +1,7 @@
 # Learning Changelog
 
-Dated session log. Newest first. Topic sections mirror the other files in `z_notes/`.
+Dated session log. Newest first. Topic sections mirror the other files in `z_notes/`. Kept as written at the time — later
+decisions may supersede an entry; [decisions.md](decisions.md) has the current state.
 Written by `/changelog <date>`.
 
 ---
@@ -33,7 +34,7 @@ wrote `test/state/test_order_map.cpp` (12 runtime tests + 6 layout assertions). 
   read says 64.
 - **Two separate requirements for cache efficiency: `sizeof` must divide 128, AND the array must be
   128-aligned.** One without the other still straddles, and reading one straddling entry costs two
-  misses. See [cache.md](cache.md).
+  misses. See [hardware.md](hardware.md).
 - **The latency cliff is the cache line, not the probe count.** 4 entries/line, so probes 1-4 are
   free and probe 5 doubles the cost. That's why load factor ≤ 0.5, not because 1.5 probes is "fast
   enough."
@@ -155,7 +156,7 @@ dispatch loop with the Add Order path bounds-checked and advancing. Also `types/
 
 - **Kernel and userspace are separated by hardware** — privilege rings plus page permissions. A
   packet DMAs into kernel memory, queues on your socket, and `recvfrom` copies it out: **two
-  copies**. See [cache.md](cache.md).
+  copies**. See [hardware.md](hardware.md).
 - **A syscall is a privilege transition, ~100ns–1µs**, usually the dominant cost in a receive
   loop. Hence batching, `recvmmsg`, and kernel bypass.
 - **UDP is message-oriented**: one `recvfrom` = exactly one complete datagram, never partial. No
@@ -175,7 +176,7 @@ dispatch loop with the Add Order path bounds-checked and advancing. Also `types/
 ### Wire format
 
 - **One datagram holds many messages**, packed with no padding. Venues batch to amortise ~42 bytes
-  of packet overhead and the syscall. See [inbound_outbound_data.md](inbound_outbound_data.md).
+  of packet overhead and the syscall. See [market_data.md](market_data.md).
 - **ITCH messages don't carry their own length** — it's fixed per type, from a lookup table. You
   need lengths for all ~20 types, not just the six you decode, or an unknown message desyncs the
   rest of the packet.

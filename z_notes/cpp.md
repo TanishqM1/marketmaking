@@ -1,25 +1,30 @@
 # C++
 
+Language features first, then inlining, then building.
+
+---
+
+## Language
+
 ### `static` — three meanings
 | where | means |
 |---|---|
-| in a class | `static constexpr int x = 0;` — belongs to the **type**, not the object. No per-object storage. |
+| in a class | `static constexpr int x = 0;` — belongs to the **type**, not the object. **Zero bytes** per object; the value is baked into the instructions. `CAPACITY` / `MASK` / `TICK_BITS` cost nothing. |
 | at file scope | private to that file |
 | inside a function | persists between calls |
 
+A real member instead (`std::size_t capacity_ = 65536;`) costs 8 bytes in every object for a value
+that never changes.
+
 ### `std::span`
 Non-owning view over memory someone else owns. Just `{pointer, size}`.
-
-- Two words, passed in registers. Zero cost vs passing ptr+len separately.
+- Two words, passed in registers. Zero cost vs passing ptr + len separately.
 - Carries the size → bounds checks possible, and ptr/len can't drift apart.
-- `.subspan(offset)` / `.first(n)` to advance through a buffer.
+- `.subspan(offset)` / `.first(n)` to advance. They **return a new span** — discarding the result
+  is a silent no-op.
 - `std::span<const std::byte>` for a receive buffer: `const` because we never write it, `std::byte`
   because it's raw bytes (not text like `char`, not numbers like `uint8_t`).
 
-⚠ Gives **bounds, not lifetime**. A span over the receive buffer dies the moment the next
-`recvfrom` overwrites it.
-
-### Getting a pointer out of a span
 | expression | type | is |
 |---|---|---|
 | `&packet` | `span*` | address of the **span object**. Wrong. |
@@ -27,155 +32,148 @@ Non-owning view over memory someone else owns. Just `{pointer, size}`.
 | `&packet[11]` | `const std::byte*` | pointer to byte 11 |
 | `packet[11]` | `const std::byte` | the byte itself |
 
-Need a byte → `packet[i]`. Need to hand a raw pointer to a function → `.data()`.
+⚠ Gives **bounds, not lifetime**. A span over the receive buffer dies on the next `recvfrom`.
 
-`&packet` feels right because raw arrays *decay* to pointers; a span is a class, so no decay — ask
-it with `.data()`. Same as `vector::data()`.
-
-⚠ A `const std::byte*` is **just an address, carrying no length.** The type can't tell "one byte"
-from "first of 144", which is why `read_be64(ptr)` can legally consume 8 — or 2000. That's why
-bounds checks live at the span layer:
+⚠ A raw `const std::byte*` carries no length — `read_be64(ptr)` can legally read 8 bytes or 2,000.
+So bounds checks live at the span layer:
 ```
 decode_packet(span)   knows the extent, checks it   <- protection HERE
   read_be64(ptr)      just an address, trusts caller
 ```
-`.data()` throws the safety away. Fine, but only because you checked first.
 
-### Memory vs registers
-C++ has **no concept of registers** — allocation is a codegen decision. (`register` keyword was
-removed in C++17.)
+### Registers vs memory — when does a variable or struct actually exist in memory?
+C++ has **no concept of registers**; placement is the compiler's choice. Small locals whose address
+doesn't escape live in registers — almost all decode code. A small local struct gets inlined, then
+**SROA** splits it into scalars: no address, no layout, no padding.
 
-**Always memory:** globals/`static`, heap, arrays indexed at runtime, `volatile`, anything whose
-address **escapes** to a function the compiler can't see into, objects >~16 bytes.
+It materialises in memory only when:
+- it **outlives the function** — container, member, `static`, heap ← the one that matters
+- its **address escapes** to code the compiler can't see (other TU without LTO, function pointer)
+- it's an **array** indexed at runtime
+- it's **not inlined and >16 bytes** — arm64 returns bigger structs via a hidden pointer
+- register pressure (arm64 has 31 GP registers, x86-64 ~14), `volatile`, `-O0`
 
-**Register (compiler's choice, and it picks register):** small locals whose address doesn't escape
-— i.e. almost all decode code. Pushed back to memory by register pressure (arm64 has 31 GP
-registers, x86-64 ~14) or `-O0`.
-
-Taking an address isn't enough to force memory:
-```cpp
-memcpy(&y, &x, 8);     // used locally + inlined -> stays in a register
-some_opaque_fn(&x);    // escapes -> must exist in memory
-```
-
-⚠ A stack spill is **not** a cache miss — the stack is always-L1.
-```
-register  ~0 cycles      L2   ~12
-stack     ~4             L3   ~40
-L1        ~4             DRAM ~200-300   <- the only one worth engineering around
-```
-The access that hurts is the order-ref map lookup: random, millions of entries, DRAM.
-
-**Check, don't guess:** Compiler Explorer at `-O2`, grep asm for `[sp, #...]` = a stack access.
-
-### When a struct exists in memory (by default it doesn't)
-A small local struct gets inlined, then **SROA** splits it into scalars in registers — no address,
-no layout, no padding. It materialises only when the compiler can't prove that's safe:
-
-- **outlives the function** — container, member, `static`, heap ← the one that matters
-- **address escapes** — passed to a function it can't see into (other TU without LTO, function
-  pointer, virtual call)
-- **it's an array** indexed at runtime
-- **not inlined AND >16 bytes** — arm64 returns bigger composites via a hidden pointer to caller
-  stack (≤16 bytes comes back in `x0`/`x1`)
-- register pressure, `volatile`, `-O0`
-
-**Why: the as-if rule** — the compiler preserves observable *behaviour*, not the operations you
-wrote. Same rule behind:
+**Why: the as-if rule** — the compiler preserves observable *behaviour*, not the operations you wrote.
 | written | compiles to |
 |---|---|
 | `uint64_t raw; memcpy(&raw, p, 8);` | one `ldr`, no stack slot |
 | `struct Price { int64_t v; };` | identical code to bare `int64_t` |
 | returning a 7-field struct | 7 values in registers |
 
-The two structs in this project that **will** be in memory, and so get largest-first ordering and
-minimised `sizeof`: the order-ref map entry (millions, all day) and the price level (array,
-runtime-indexed).
+⚠ A stack spill is **not** a cache miss — the stack is always in L1 (~4 cycles). The access that
+hurts is the order-map lookup: random, DRAM, ~200 cycles.
+
+**Check, don't guess:** Compiler Explorer at `-O2`; `[sp, #...]` in the asm = a stack access.
+
+The structs that **do** live in memory here get largest-first ordering and a minimised `sizeof`:
+the order-map entry and the price ladders.
+
+### Struct layout: `alignof`, `sizeof`, padding, bit-fields
+```
+alignof(struct) = the largest alignof among its members
+each member     = placed at an offset that's a multiple of its own alignment
+sizeof(struct)  = rounded up to a multiple of alignof(struct)
+```
+Why: hardware loads a value in one access when it's naturally aligned, and `sizeof` rounds up so
+`arr[1]` is aligned too. **Declare largest members first** — a `uint64_t` after a `uint8_t` inserts
+7 bytes of padding.
+
+**Bit-fields** — `std::uint32_t abs_tick : 26;` means *26 bits*, not bytes. Consecutive bit-fields
+share one storage unit:
+```
+OrderEntry:  ref (8) | remaining (4) | abs_tick:26 side:1 occupied:1 (+4 unused bits) = 16 B
+```
+- Same machine code as hand-written masks (`and`, `ubfx` extract, `bfi` insert) — checked.
+- ⚠ An out-of-range assignment is **silently truncated** (`abs_tick = 2²⁶` stores 0) → prove the
+  range with a `static_assert`.
+- ⚠ Adding `uint8_t pad[2]` after them makes the struct **24**, not 16: the bit-field word is full,
+  so `pad` starts a new byte at offset 16 and the size rounds up to 8.
+- Bit order is compiler-chosen — fine in memory, **never** `memcpy` one onto the wire. No pointers
+  to bit-field members.
+
+Lock layouts with `static_assert(sizeof(OrderEntry) == 16)` — a wrong size becomes a build failure.
 
 ### `auto`
-Deduces the type from the initializer. Still fully static typing.
-
-> `auto` when the RHS makes the type obvious or the type is verbose.
-> Spell it out for numeric widths and strong types. Never `auto x = 0` for an index.
+Deduces the type from the initializer; still fully static typing.
 
 | use | don't |
 |---|---|
-| verbose types: `auto it = map.find(ref);` | numeric literals — `auto offset = 0;` is an **`int`**, then `offset < packet.size()` is a sign-compare warning. Use `std::size_t` or `0uz`. |
-| **preventing narrowing**: `int n = packet.size();` silently narrows; `auto n =` is exactly `size_t` | strong types — `Price p = read_price(msg)` documents AND enforces; `auto p =` throws that away |
+| verbose types: `auto it = map.find(ref);` | numeric literals — `auto offset = 0;` is an **`int`** → sign-compare warning against `.size()`. Use `std::size_t` |
+| **preventing narrowing**: `int n = packet.size();` narrows; `auto n =` is exactly `size_t` | strong types — `Price p = read_price(msg)` documents and enforces; `auto p =` throws that away |
 
 ### `size_t` vs fixed-width
 | use | for |
 |---|---|
-| `std::size_t` | sizes, counts, indices, memory offsets — magnitude scales with the address space |
-| `std::uint64_t` / `32` / `16` | **externally-defined** widths: wire fields, protocol fields |
+| `std::size_t` | sizes, counts, indices, memory offsets |
+| `std::uint64_t` / `32` / `16` | **externally-defined** widths: wire and protocol fields |
 
-```cpp
-AddOrder::order_ref = 11        // size_t   — index into memory
-packet.size(), offset           // size_t
-order_ref, timestamp            // uint64_t — ITCH says 8 bytes, every machine, forever
-shares, price                   // uint32_t
-stock_locate                    // uint16_t
-```
-An order ref is **not a size**. `size_t order_ref` works here only by accident; on a 32-bit target
-`sizeof(size_t)` is 4 and `memcpy` reads half the field.
+`order_ref` is `uint64_t` (ITCH says 8 bytes, forever), not `size_t` — on a 32-bit target
+`size_t` is 4 and `memcpy` reads half the field.
 
-Not `uint64_t` everywhere because `sizeof`, `.size()`, `subspan()` and indexing all speak `size_t`
-— anything else converts at every boundary.
+⚠ **Same width, different types:** here `size_t` is `unsigned long`, `uint64_t` is `unsigned long
+long`. Overload resolution treats them as different. Pick by **meaning**, not width.
 
-⚠ **Same width, different types** (verified here): `size_t` is `unsigned long`, `uint64_t` is
-`unsigned long long`. Not interchangeable for overload resolution — you can get "no matching
-function" between two 64-bit unsigned ints. Pick by **meaning**, not width.
-
-### Casting an int to an enum doesn't translate it
-It **relabels the bits**; the number rides through unchanged. Enum names label *some* values, not
-the only legal ones — any other number is a valid, nameless value of that type.
-
+### Enums: a cast relabels, it doesn't translate
 ```cpp
 enum class Side : std::uint8_t { Buy, Sell };   // Buy = 0, Sell = 1
-static_cast<Side>(packet[AddOrder::side]);      // 'B' is 66 -> Side(66), legal and nameless
-// side == Side::Buy  ->  66 == 0  ->  false, every message
+static_cast<Side>(packet[AddOrder::side]);      // 'B' is 66 -> Side(66): legal, nameless
 ```
+With a fixed underlying type, all 256 values are valid — enumerator names label *some* of them. So
+`Side(66) == Side::Buy` is false on **every** message: every order lands on the ask side, the book
+has no bids, and nothing warns. Translate explicitly instead:
+```cpp
+mm::Side side = mm::Side::Buy;      // defined start value — no uninitialized read
+if (temp_side == 'S') { side = mm::Side::Sell; }
 ```
-cast:    66 -> 66     relabels
-switch:  66 ->  0     translates   <- the switch IS the conversion
+Compiles to `cmp` + `cset` (no branch). Casting works for `MsgType` only because its enumerators
+*are* the wire chars (`AddOrder = 'A'`). See [decisions.md](decisions.md) — why we don't validate.
+
+**`switch` on an enum:** with no `default:`, `-Wswitch` (in `-Wall`) warns when a named enumerator
+has no `case`. A `default:` silences that. A `switch` on a plain `char` never warns.
+
+**ASCII:** `'A'` = 65, `'B'` = 66, `'S'` = 83. A character literal *is* its code.
+
+### Linkage: anonymous namespace
+`namespace { }` → everything inside is private to that TU (internal linkage), absent from the
+symbol table. The compiler knows every call site (inlines aggressively), nothing outside can call a
+raw decoder and skip the bounds check, no cross-TU collisions. `static` at file scope does the same.
+
+- ⚠ **`.cpp` only.** In a header, each including TU gets its own private copy.
+- ⚠ Can't be declared in a header (two candidates → "call is ambiguous"), so tests can't reach it.
+  That's why our decoders live in `namespace detail` instead — tests call them directly.
+- ⚠ `using namespace itch;` ≠ `namespace itch { }` — the first only affects lookup; definitions
+  stay at global scope.
+
+Check: `nm -gU build/itch.o | c++filt`.
+
+### `[[likely]]` / `[[unlikely]]`
+Tell the compiler which branch dominates so it **lays the code out** that way: the hot path becomes
+the fall-through (no taken jump) and the cold body moves to the end of the function, off the hot
+path's I-cache lines.
+```cpp
+if (return_code <= 0) [[unlikely]] { return {}; }
+return {m_buffer, static_cast<std::size_t>(return_code)};
 ```
-It worked for `MsgType` only because its enumerators *are* the wire chars (`AddOrder = 'A'` = 65).
+- ⚠ **Not a branch-predictor hint** — the hardware predictor learns at runtime. These are static
+  layout. The test itself still runs every time.
+- Annotate only when you know (error paths, bounds failures, gap recovery). PGO supersedes them.
 
-⚠ No validation anywhere. `Side(66)` doesn't default, doesn't warn, doesn't crash. Downstream
-`if (side == Buy) bids[...] else asks[...]` is false for **every** message — all orders land on the
-ask side and the book has **no bids**. Silent. Hence `default:` must be loud.
+### `noexcept`, `explicit`, `const`
+| | means | here |
+|---|---|---|
+| `noexcept` | never throws. Without it the caller emits unwinding machinery and the optimiser can't reorder across the call (across a TU it must *assume* a throw). Throwing anyway → `std::terminate` | all book/map handlers, `receive()`. The constructor *may* throw (startup) |
+| `explicit` | blocks implicit conversion into the class. Without it `UDP_Receiver r = 8080;` compiles — and opens a socket | every single-argument constructor. Only for constructors / conversion operators |
+| `const` member fn | "doesn't modify the object" — writes are compile errors | `best_bid()` / `best_ask()`. A `const Book&` handed to the strategy can read the touch but never move a cursor |
 
-### Anonymous namespace / internal linkage
-`namespace { }` with no name → everything inside is private to that TU, never exported.
+`const` is for correctness, **not speed**. `const` ≠ `constexpr` (computable at compile time).
 
-| linkage | |
-|---|---|
-| external (default) | symbol exported; other `.cpp`s can call it |
-| internal | private to this TU; absent from the object file's symbol table |
+---
 
-**What it buys:** the compiler knows every call site (inlines aggressively, can delete the
-out-of-line copy entirely); nothing outside can call a raw decoder and skip the bounds check in
-`decode_packet`; no cross-TU collisions, smaller binary, faster link.
+## Inlining
 
-`static` at file scope does the same, but `static` already means three other things — and
-anonymous namespaces work for types too.
-
-Confirm: `nm -gU build/itch.o | c++filt` — anything in the anonymous namespace shouldn't appear.
-
-⚠ **`.cpp` only, never a header.** Each including TU gets its own private copy with distinct
-symbols. State would silently be per-TU.
-
-⚠ **Can't be declared in a header.** Declaring `itch::read_be16` there while defining it in the
-anonymous namespace gives two candidates → `call to 'read_be16' is ambiguous`. So it's unusable
-from tests; if tests need it, make it `inline` in the header instead.
-
-⚠ **`using namespace itch;` ≠ `namespace itch { }`.** The first only affects *lookup*; your
-definitions stay at global scope and the header's declarations have no definition → ambiguous call
-or undefined reference.
-
-### What inlining actually does
-Pastes the machine code at the call site. Removes the call overhead and — more importantly — the
-**optimisation barrier** a call creates.
+### What it does
+Pastes the callee's machine code at the call site. Removes the call overhead and — more importantly
+— the **optimisation barrier** a call creates.
 
 `read_be64(packet, AddOrder::order_ref)` where `order_ref` is `constexpr 11`:
 ```
@@ -187,73 +185,73 @@ NOT inlined                          INLINED
     ret
 5 instructions, 2 branches           3 instructions, 0 branches
 ```
-Three things removed: argument marshalling, the branches, and **the barrier** — the compiler
-couldn't fold the offset into the addressing mode through an opaque call. `[x0, x1]` becomes
-`[x0, #0xb]`. *That's what makes `constexpr` offsets pay off*, and it compounds across six field
-reads per message.
+The offset folds into the addressing mode — *that's* what makes `constexpr` offsets pay off.
+Calling a small function from another is free once inlined.
 
-⚠ **Not about stack overhead.** No `sub sp` in either version — `read_be64` is a *leaf* function
-(calls nothing) so it never builds a frame. The "every call pushes a frame" model comes from `-O0`.
+### The compiler can only inline code it can see
+Inlining needs the **body** in the caller's TU. `#include` pastes the header in, so a body in the
+`.hpp` is visible everywhere; a body in a `.cpp` is a promise → a real call.
 
-⚠ **"Costs cache space" is inverted for small functions.** 2 instructions × 6 call sites = 12,
-versus a 3-instruction function + 6 call sequences ≈ 30. A function smaller than its own call
-sequence makes the binary *smaller*. I-cache cost only applies to large bodies.
+| code | goes in | why |
+|---|---|---|
+| hot (book handlers, order map, scans) — every message | `.hpp`, inside the class | inlined: no call, fields stay in registers |
+| cold (setup, error reporting) | `.cpp` | call cost irrelevant; keeps headers and I-cache lean |
 
-⚠ **The `inline` keyword does not request inlining.** It's an ODR exemption letting a definition
-appear in multiple TUs (i.e. live in a header). The optimiser decides separately. Putting the
-definition in the header is what *enables* it, by making the body visible.
+⚠ **The `inline` keyword doesn't request inlining.** It's an ODR exemption letting a definition
+appear in many TUs (i.e. live in a header). Member functions defined inside a class are implicitly
+`inline`. The optimiser decides separately.
 
-### `[[likely]]` / `[[unlikely]]`
-C++20. Tell the compiler which branch dominates so it lays the code out accordingly.
-```cpp
-if (return_code <= 0) [[unlikely]] { return {}; }   // cold body moves out of line
-return {m_buffer, static_cast<std::size_t>(return_code)};   // fall-through
-```
-Switch form: put the attribute after the `case` label.
+⚠ Visible ≠ inlined. `[[gnu::always_inline]]` forces, `[[gnu::noinline]]` / `[[gnu::cold]]`
+prevents — use only after measuring. LTO also inlines across `.cpp`s, but only in builds with the
+flag, so firms keep hot code header-only regardless ⚠️.
 
-Two wins: the hot path becomes the **fall-through** (a taken branch costs a pipeline redirect, a
-fall-through is free), and the cold body stops sharing I-cache lines with hot code.
-
-⚠ **Not a branch-predictor hint.** The hardware predictor learns at runtime and is very good.
-These affect *static layout at compile time*. Common misconception.
-
-⚠ Only annotate when you actually know — a wrong guess pessimises the hot path. Good: error
-branches, bounds-check failures, gap recovery.
-
-⚠ PGO supersedes these; it uses measured frequencies.
-
-### `noexcept`
-A promise the function never throws. If a function *might* throw, the caller emits a landing pad
-(stack-unwinding machinery) and the optimiser can't reorder across the call — and across a TU
-boundary the compiler must **assume** it might. `noexcept` removes that.
-
-If a `noexcept` function does throw → `std::terminate`, instantly, no unwinding.
-
-Right split here: **constructor throws** (startup, a failed bind should be loud), **`receive()` is
-`noexcept`** (hot path, never throws).
-
-### `explicit`
-Blocks implicit conversion from the argument type to the class type.
-```cpp
-UDP_Receiver r = 8080;    // compiles without `explicit`!
-f(8080);                  // ditto, if f takes a UDP_Receiver
-```
-Matters most when the constructor has side effects — `UDP_Receiver` opens a socket and binds a
-port, and you don't want that happening because a number was passed where an object was expected.
-Default to `explicit` on every single-argument constructor.
-
-### Q: const declaration on a funciton is mostly for reads
-Yes — `const` after a member function = **"does not modify the object."** Inside it every member is
-read-only; a write is a compile error.
-
-| function | `const`? |
+### Inlining is a cache budget
+| | |
 |---|---|
-| `best_bid()` / `best_ask()` — just read | ✅ |
-| `add` / `remove` / scans — write ladder, map, cursors | ❌ won't compile |
+| **always inline** | leaf functions smaller than their own call sequence (`read_be16` = 1 load + 1 `rev`). 2 instructions × 6 call sites = 12, vs a function + 6 calls ≈ 30 — the binary gets *smaller* |
+| **verify** | big bodies, e.g. whole decoders in one `switch`. Inlined copies grow the hot loop; if it stops fitting L1i you pay misses on the exact path you sped up |
 
-**Why firms care:** a `const Book&` can only call `const` functions. Hand the strategy a
-`const Book&` → it can read the touch but can never move a cursor or corrupt the ladder — the
-compiler enforces it, zero runtime cost.
+```sh
+clang++ -O2 -Rpass=inline -Rpass-missed=inline -c codec/itch.cpp
+```
+Shows what was inlined and what was **declined**, with reasons. Release only — `-O0` inlines
+nothing. In a disassembly, `bl <name>` = a real call. See [hardware.md](hardware.md) — code layout.
 
-**Gotcha:** `const` is for correctness, not speed — it doesn't make code faster. Speed is `noexcept`
-/ inlining. And `const` ≠ `constexpr` (that one means "computable at compile time").
+---
+
+## Build & toolchain
+
+### TU (translation unit)
+One `.cpp` plus everything it `#include`s — compiled **completely alone**. A **TU boundary** is where
+the compiler loses visibility. Which is why headers exist, why a `.cpp` body can't be inlined into
+another TU, why `inline` exists, and why an anonymous namespace is per-TU.
+
+Our loop pays for two boundaries per packet — `receiver.receive()` (`libmm_transport.a`) and
+`decode_packet()` (`libmm_codec.a`) are opaque calls, and `main` re-tests `packet.empty()` because
+it can't see that `receive()` already decided.
+
+### LTO (Link Time Optimization)
+Each `.o` stores a half-compiled form; the optimiser sees all of them at **link** time and can
+inline across files. Doesn't weaken layering — sources, headers and the CMake graph are untouched.
+```cmake
+set_property(TARGET trading_system mm_transport mm_codec
+             PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+```
+Release only (slow builds, harder debugging). Verify: `ninja -C build-release -t commands | grep flto`.
+
+### `-DNDEBUG`
+Makes `assert()` compile to nothing. Overriding `CMAKE_CXX_FLAGS_RELEASE` drops CMake's default
+`-DNDEBUG` — put it back, or every assert stays live in the build you measure latency in.
+
+### Builds
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug             # -O0 -g + sanitizers
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release   # -O2 -g -march=native -DNDEBUG
+cmake --build build --target test_book test_order_map test_codec  # tests are EXCLUDE_FROM_ALL
+ctest --test-dir build --output-on-failure
+```
+- **Latency numbers only from Release.**
+- ⚠ Test targets are `EXCLUDE_FROM_ALL` — build them **by name** before `ctest`, or it runs stale
+  binaries and "passes".
+- macOS: LeakSanitizer is unsupported on arm64 (`leaks --atExit -- ./binary` instead). ASan runs can
+  hang here — use `-DMM_SANITIZE=OFF` / UBSan, or `ASAN_OPTIONS=symbolize=0`.

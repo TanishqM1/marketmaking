@@ -67,21 +67,22 @@ Route by topic:
 
 | File | Covers |
 |---|---|
-| `z_notes/cpp.md` | the C++ language — types, structs, alignment, keywords, stdlib |
-| `z_notes/cache.md` | caches — line/way/set, hierarchy, inclusion policy, clean/dirty, alignment, working set, CAT |
-| `z_notes/opsys_machine_arch.md` | OS & hardware — syscalls, kernel vs userspace, registers/ISA, network receive path |
-| `z_notes/data_structures.md` | algorithms & containers — hashing, probing, layout choices |
-| `z_notes/inbound_outbound_data.md` | wire formats — ITCH, SBE, offsets, byte order, framing, parse loop |
-| `z_notes/hft_systems.md` | firm-level systems — cores, sharding, parallelism, NUMA, operational setup, FPGA |
-| `z_notes/market_structure.md` | how markets work — books, matching, message semantics |
-| `z_notes/build_toolchain.md` | compiling, linking, CMake, flags, sanitizers |
-| `z_notes/bad_habits.md` | things not to do here. **Rules list, not FAQ — leave its style alone.** |
+| `z_notes/decisions.md` | design decisions — the decision log, tradeoff write-ups, assumptions, standing rules |
+| `z_notes/cpp.md` | the C++ language, inlining, and building — compiling, linking, CMake, flags, sanitizers |
+| `z_notes/hardware.md` | CPU / ISA, caches, TLB / hugepages, OS, syscalls, network receive path |
+| `z_notes/data_structures.md` | algorithms & containers — hashing, probing, deletion, the order map's mechanics |
+| `z_notes/market_data.md` | wire formats (ITCH, SBE), the parse loop, message semantics, multicast / A-B, gap recovery |
+| `z_notes/hft_systems.md` | firm-level systems (cores, sharding, ops setup, FPGA) + this project's architecture |
 
-Create the file if it doesn't exist yet, with just the topic name as an `# H1` and the entry
-under it. Don't pre-create files for topics with no entries.
+`changelog.md` is written only by `/changelog`. In `decisions.md`, a new decision gets a **row in the
+decision log**; only a big tradeoff gets a write-up. "Standing rules" is a rules list, not FAQ — keep
+its style. Assumptions go in its table.
 
-`inbound_outbound_data.md` already holds the user's own reference notes. Append FAQ entries below
-a `# FAQ` divider at the end, leaving their material untouched.
+Prefer an existing file — the user wants few files. Create a new one only for a genuinely new
+topic, with just the topic name as an `# H1` and the entry under it.
+
+The ITCH / SBE sections of `market_data.md` are the user's own reference notes — add to the
+relevant section without rewriting their material.
 
 Check whether an entry for the same question already exists. If so, improve it in place instead
 of duplicating.
