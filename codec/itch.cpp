@@ -259,7 +259,7 @@ void decode_packet(std::span<const std::byte> packet)
             }
 
             default:
-                // TODO: write error path, make cold path
+
                 break;
         }
     }

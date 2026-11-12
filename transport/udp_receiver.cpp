@@ -68,7 +68,7 @@ UDP_Receiver::UDP_Receiver(std::uint16_t port)
 std::span<const std::byte> UDP_Receiver::receive() noexcept
 {
     // call recvfrom, then return the span (packet address, size) pair.
-    ssize_t return_code = recvfrom(m_sockfd, m_buffer, BUFFER_SIZE, 0, nullptr, nullptr);
+    ssize_t return_code = recvfrom(m_sockfd, m_buffer, BUFFER_SIZE, MSG_DONTWAIT, nullptr, nullptr);
     // here, [[unlikely]] ensures the code that runs IF the error check is TRUE, is far
     // from our cache line (to not waste space). This is because the error path is more than
     // unlikely, so we do no want any error logging to take up cache space.
