@@ -148,8 +148,8 @@ class Book
 
   private:
     OrderMap      orders_;
-    std::uint32_t bids_[ARRAY_SIZE + 1]{}; // [ARRAY_SIZE] is a guard slot, always 0
-    std::uint32_t asks_[ARRAY_SIZE + 1]{};
+    alignas(128) std::uint32_t bids_[ARRAY_SIZE + 1]{}; // [ARRAY_SIZE] is a guard slot, always 0
+    alignas(128) std::uint32_t asks_[ARRAY_SIZE + 1]{};
     std::uint16_t best_bid_ = NO_LEVEL;
     std::uint16_t best_ask_ = NO_LEVEL;
     std::uint32_t low_{0}; // absolute tick at ladder index 0

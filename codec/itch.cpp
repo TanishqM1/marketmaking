@@ -20,11 +20,12 @@ namespace detail
 {
 // here we need functions to read each type of order, starting from a byte, then return the type.
 // addorder
+
 AddOrderFields decode_add_order(const std::byte* packet)
 {
     // need to read 5 params, and we are given the address of the MESSAGE start.
     std::uint64_t order_ref = read_be64(packet, AddOrder::order_ref);
-    mm::Side      side;
+    mm::Side      side      = mm::Side::Buy;
     auto          temp_side = static_cast<char>(packet[AddOrder::side]);
     switch (temp_side)
     {
@@ -34,9 +35,6 @@ AddOrderFields decode_add_order(const std::byte* packet)
             break;
         case 'S':
             side = mm::Side::Sell;
-            break;
-        default:
-            // TODO followup on this
             break;
     }
     std::uint32_t shares = read_be32(packet, AddOrder::shares);
