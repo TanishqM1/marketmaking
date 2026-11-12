@@ -31,7 +31,7 @@ int failures = 0;
 using mm::Side;
 using mm::state::Book;
 
-// Books are ~2 MB (the order map), so they live in static storage, never on the stack --
+// Books are ~1 MB (the order map), so they live in static storage, never on the stack --
 // same as production. One per test so no state leaks between them.
 
 void test_new_book_is_empty()

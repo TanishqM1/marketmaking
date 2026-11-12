@@ -45,7 +45,7 @@ class OrderMap
     // essentially, past .70, when we are doing multple lookups. It also has to be
     // a multiple of 2.
 
-    // 2^(16) uses 2MB, and stores all 32,000 possible orders ALL in L2 Cache!
+    // 2^(16) slots x 16 B = 1MB, room for ~32,000 live orders at 0.5 load, ALL in L2 Cache!
     // TODO make this part dynamic, so we can chose different capacties at compile time.
 
     // static = class owns this variable, ONE copy.

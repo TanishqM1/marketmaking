@@ -50,9 +50,9 @@ its own L1/L2, so a shard's working set is genuinely private and nothing else ev
 
 ### Sharding exists to make the working set fit
 ```
-8000 symbols, ~4M live orders x 32 B = 128 MB   -> fits in NO cache
+8000 symbols, ~4M live orders x 16 B = 64 MB    -> fits in NO cache
 ```
-- **filter to subscribed symbols** — trading 50 names means ignoring 7,950. ~20k live orders = 640 KB.
+- **filter to subscribed symbols** — trading 50 names means ignoring 7,950. ~20k live orders = 320 KB.
 - **shard by symbol across cores** — each core's map is a fraction of the total.
 
 Not a throughput decision. See [cache.md](cache.md) — working set budget.
@@ -130,7 +130,7 @@ TCP exec reports (ack/fill/reject) → parse → OMS → position → strategy
 | no kernel bypass, sockets only | NIC DMAs into user memory (DPDK/ef_vi/Onload) |
 | no core pinning/isolation, CAT, DDIO, hugepage control | `isolcpus`, IRQ affinity, CAT, DDIO, hugepages |
 | one book, no sharding | shard symbols across cores, correlated names together |
-| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1-2 MB L2 **per core** → our 2 MB map is an L3 structure there |
+| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1-2 MB L2 **per core** → our 1 MB map is borderline L2 / L3 there |
 | latency numbers are macOS-socket numbers | tuned bypass, tick-to-trade ~1-5 µs (FPGA: ~10s-100s ns) |
 | P&L meaningless: replay doesn't react, fake fills, no queue position | real matching, queue position modelled |
 
@@ -168,7 +168,7 @@ See also: [bad_habits.md](bad_habits.md) — no `new`/`delete` on the hot path
 the sharding: whoever owns the book owns its orders.
 ```
 locate_to_book[stock_locate] -> Book (one per traded symbol, static storage)
-                                 ├─ orders_  open-addressing map, ref & MASK, 65,536 × 32 B = 2 MB,
+                                 ├─ orders_  open-addressing map, ref & MASK, 65,536 × 16 B = 1 MB,
                                  │           backward-shift erase (state/order_map.hpp)
                                  └─ bids_/asks_ tick ladders + best cursors  (state/book.hpp)
 ```
@@ -176,7 +176,7 @@ locate_to_book[stock_locate] -> Book (one per traded symbol, static storage)
 | | per-book map (ours) | one shared array `orders[ref]` |
 |---|---|---|
 | fits | few symbols, sharded by core | one process maintaining **every** book on the feed |
-| memory | ∝ live orders (2 MB, L2-hot) | ∝ day's total refs (GBs, TLB/cache misses) |
+| memory | ∝ live orders (1 MB, L2-hot) | ∝ day's total refs (GBs, TLB/cache misses) |
 | lookup | hash + 1–2 probes | 1 load, but likely a cold one |
 | cores | private per core, no sharing | shared → cache-line bouncing or locks |
 

@@ -11,10 +11,10 @@ Entries are separated by `---`.
 ref into the order's `remaining`, `tick` and `side` — **on every message**. So the order map is
 the hottest lookup in the system, and its cost is mostly **how many cache lines it touches**.
 
-**Option 1 — inline (ours, `state/order_map.hpp`).** The table *is* the storage: each 32 B slot
-holds the whole order, 4 slots per 128 B line.
+**Option 1 — inline (ours, `state/order_map.hpp`).** The table *is* the storage: each 16 B slot
+holds the whole order, 8 slots per 128 B line.
 ```
-slots_[]  65,536 × 32 B = 2 MB
+slots_[]  65,536 × 16 B = 1 MB
 ┌──────────┬──────────┬───────┬───────┐┌──────────┬──
 │ ref 1001 │ ref 5537 │ EMPTY │ EMPTY ││ ref 1004 │ ..
 │ rem,tick │ rem,tick │       │       ││ rem,tick │
@@ -50,7 +50,7 @@ index[] {ref, ptr}                     pool[] OrderEntry
 | benefit | matters for us? |
 |---|---|
 | pointer stability — erase shifts only the 16 B index slot, entries never move | barely; book never holds a ptr across erase |
-| large entries (e.g. 200 B) — shifting pointers is cheaper than shifting entries | no, ours are 32 B |
+| large entries (e.g. 200 B) — shifting pointers is cheaper than shifting entries | no, ours are 16 B |
 | dense iteration over all live orders | no, the book never iterates |
 
 **Industry:** the big C++ hash maps ship both and document this exact split —
