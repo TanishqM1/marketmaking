@@ -129,7 +129,7 @@ TCP exec reports (ack/fill/reject) -> parse -> OMS -> position -> strategy
 | no kernel bypass, sockets only | NIC DMAs into user memory (DPDK / ef_vi / Onload) |
 | no core pinning/isolation, CAT, DDIO, hugepages | `isolcpus`, IRQ affinity, CAT, DDIO, hugepages |
 | no sharding yet | shard symbols across cores, correlated names together |
-| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1–2 MB L2 **per core** → a 1 MB map is borderline L2/L3 there |
+| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1–2 MB L2 **per core** → our 64 MB map is L3/DRAM either way |
 | latency numbers are macOS-socket numbers | tuned bypass, tick-to-trade ~1–5 µs (FPGA ~10s–100s ns) |
 | P&L meaningless (replay doesn't react, fake fills) | real matching, queue position modelled |
 
@@ -144,31 +144,103 @@ codec/       ITCH offsets + decoders — all inbound wire knowledge (SBE later)
 state/       order map + book (ladders, bitmaps, best bid/ask) — the market state
 transport/   UDP socket, busy-poll receive (MoldUDP64 later)
 session/     sequence numbers, gap detection — not started
-app/         main loop; next: 500 books + locate -> book table
+app/         startup (config + R messages -> books, locate_to_book), then the main loop
 test/        mirrors the source tree
 ```
 Rule: `codec/` never includes `state/` (planned `decode_packet<Handler>`).
 
 ### Where the order map lives
-**One order map per `Book`**, owned by whichever core runs that symbol — order state follows the
-sharding.
+**One order map for every symbol**, a member of `Market` — not inside `Book`. ITCH refs are unique
+across the feed, and every message carries `stock_locate`, so the ref finds the order and the locate
+finds the book.
 ```
-locate_to_book[stock_locate] -> Book (one per traded symbol, static storage, ~1.08 MB)
-                                 ├─ orders_   open-addressing map, 65,536 × 16 B = 1 MB
-                                 ├─ bids_/asks_  4,097 × 4 B each, alignas(128) ≈ 32 KB
-                                 ├─ bid/ask bitmaps  64 words each = 1 KB
-                                 └─ best_bid_ / best_ask_ cursors, low_
+Market
+ ├─ orders           OrderMap, 2²² = 4,194,304 × 16 B = 64 MB, keyed by ref   ← every symbol's orders
+ ├─ locate_to_book   uint16_t[65536] = 128 KB, locate → book index
+ └─ books            vector<Book>, 34,048 B each, back to back
+                      ├─ bids_/asks_  4,097 × 4 B each, alignas(128) ≈ 32 KB
+                      ├─ bid/ask bitmaps  64 words each = 1 KB
+                      └─ best_bid_ / best_ask_ cursors, low_
+
+E locate 14, ref 9001, qty 100  →  books[locate_to_book[14]].execute(orders, 9001, 100)
 ```
-500 books ≈ 540 MB — most of it cold order-map slots, which is the sizing problem in issue #25.
-Why this layout and not a shared map: [decisions.md](decisions.md).
+`Book`'s handlers take the map as their first argument (`OrderMap&`); `Book` holds only the ladder.
+1,000 books ≈ 34 MB instead of ~1 GB. 2²² slots hold the public full-market peak (~1.93M live
+orders) at 0.46 load. `Market` is ~65 MB → `static` in `main` (a 64 MB stack local segfaults before
+`main`'s first line: exit 139). Its constructor zero-fills the map, so all pages are faulted in at
+startup — measured RSS 65.5 MB before the first R. Tests build `Market` on the heap and use `static`
+maps. ⚠️ the pre-touch is implicit (the zero-fill); firms make it explicit with `mlock` — #24.
+
+### Startup: config + R messages → books
+`app/startup.*` + `app/main.cpp`. Everything before the hot loop. It runs once, before trading, so
+it may allocate, throw, and use `std::map`. The hot path only ever touches `locate_to_book`,
+`books` and `orders`.
+
+**Why two sources.** Nasdaq assigns locates **fresh every day**, so a config can't hold them. The
+config holds `TICKER,prev_close`; the feed's R messages (Stock Directory) say "AAPL is locate 14
+today". Firms do the same: a securities master holds instruments, and each venue's IDs are bound to
+them at start of day.
+
+```
+main
+ ├─ std::ifstream config_file{argv[1]}   can't open → "cannot open config", exit 1
+ ├─ static Market market;           constructor: locate_to_book = all NOT_TRADED, orders zero-filled
+ ├─ UDP_Receiver receiver{8080}     bind BEFORE the feed starts — UDP drops anything sent earlier
+ ├─ try { load_config, run_startup }  any throw → "startup failed: <why>", exit 1
+ ├─ load_config(market, config_file)
+ │                                  per line "AAPL,175.23": skip blank / #; bad line → throw "config line N: bad entry \"<line>\"",
+ │                                  pad ticker to 8 ("AAPL    "), dollars → 1752300,
+ │                                  config[ticker] = {prev_close, NOT_TRADED}
+ │                                  end: books.reserve(config.size())
+ ├─ run_startup(market, receiver)   busy-poll receive() → handle_startup_packet until it says done
+ │    ├─ handle_startup_packet      one datagram:
+ │    │    while next_r_message     codec/: R at offset? decode it, offset += 39
+ │    │        bind_r_message       app/: not in config → skip; ticker or locate already bound → throw; else
+ │    │                               books.emplace_back(prev_close),
+ │    │                               locate_to_book[locate] = i, config[ticker].book = i
+ │    │    then: no R seen yet → drop it | all R → keep reading | else leftover = rest → done
+ │    └─ report_missing_tickers     every config ticker that got no R → stderr
+ ├─ decode_packet(market.leftover)  the first orders after the last R
+ └─ hot loop
+```
+
+| `Market` field | what | hot path? |
+|---|---|---|
+| `config` | `std::map` ticker → `{prev_close, book}` | **no** — a tree, ~10 pointer chases per `find`; startup only |
+| `books` | `std::vector<Book>`, reserved once, never grows | **yes** — the actual work |
+| `orders` | one `OrderMap` for every symbol, ref → order | **yes** — one lookup per message |
+| `locate_to_book` | `std::array<uint16_t, 65536>`, locate → book index | **yes** — one 2 B load |
+| `leftover` | view of the rest of the datagram that ended startup | once, right after startup |
+| `seen_r_message` | has the R burst started yet? | no |
+
+**Why these structures:**
+- **`locate_to_book` is a flat array, not a hash map.** The locate *is* the index: no hash, no
+  probe, and no bounds check (a `uint16_t` can't exceed 65,535). `uint16_t` entries = 128 KB, 64
+  per line; `Book*` would be 512 KB for the same one load (asm checked: `ldrh` + `umaddl`).
+- **`books` is a vector, not an array,** because the count is only known at runtime, from the
+  config. Indexing it is the same address math as an array. `reserve(n)` gives exactly `n`
+  (checked: `reserve(1000)` → 1000; 1001 `push_back`s with no reserve → 1024) and each ticker gets
+  at most one book, so it never reallocates and books never move. Reserved-but-unused slots are
+  address space only — the OS backs a page with RAM on first write.
+
+**Example:** config AAPL / MSFT / TSLA. Datagrams `[S]` → dropped; `[R AAPL 14 | R ZZZZ 7]` → AAPL
+= book 0, `[14] = 0`, ZZZZ not in config; `[R MSFT 22 | A | E]` → MSFT = book 1, `[22] = 1`,
+leftover = `[A | E]`. TSLA never got an R → reported.
+
+**Gotchas:**
+- `leftover` points into the receive buffer — decode it before the next `receive()`.
+- An R **after** startup hangs the hot loop (R isn't in `MsgType`) — see the Assumptions in
+  [decisions.md](decisions.md).
+- When the hot path gets its handler, give it only `books` (as a `std::span`, which can't grow)
+  and `locate_to_book` — never `config`. Then it *can't* touch the map or resize the vector.
 
 ### What lives in memory, and why
 | | size | notes |
 |---|---|---|
 | receive buffer | 64 KB alloc, **~1.4 KB hot** | holds one datagram; ~11 lines, permanently hot |
 | decode locals | **0** | SROA keeps the `Fields` structs in registers |
-| **order map** (per book) | **1 MB** | the only random-access structure → **the only real miss source** |
-| ladders (per book) | ~32 KB | sequential near the touch, stays hot |
+| **order map** (one, shared) | **64 MB** (2²² slots) | the only random-access structure → **the only real miss source** |
+| ladders (per book) | ~33 KB (`sizeof(Book)` = 34,048) | sequential near the touch, stays hot |
 | bitmaps (per book) | 1 KB | scanned only when the best level empties |
 | the code | tens of KB | competes for L1i, and with data in the unified L2 |
 

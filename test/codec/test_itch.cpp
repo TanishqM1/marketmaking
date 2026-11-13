@@ -8,6 +8,7 @@
 //   static_assert    compile time, zero cost. Layout: sizeof, offsets, lengths.
 //   CHECK            run time. Decoded VALUES from known bytes.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -59,6 +60,9 @@ static_assert(OrderExecutedWithPrice::execution_price + 4 == OrderExecutedWithPr
 static_assert(OrderCancel::cancelled_shares + 4 == OrderCancel::length);
 static_assert(OrderDelete::order_ref + 8 == OrderDelete::length);
 static_assert(OrderReplace::price + 4 == OrderReplace::length);
+static_assert(RMessage::inverse_indicator + 1 == RMessage::length);
+static_assert(RMessage::stock_ticker == MessageHeader::size);
+static_assert(RMessage::stock_locate == MessageHeader::stock_locate);
 
 // every message body starts after the common 11-byte header
 static_assert(MessageHeader::size == 11);
@@ -174,6 +178,80 @@ void test_decode_delete_order()
     CHECK_EQ(f.order_ref, 1029485761u);
 }
 
+// (R) Stock Directory, 39 bytes. Offsets typed in by hand (1 = locate, 11 = ticker), not
+// taken from RMessage, so a wrong constant can't hide behind itself.
+void put_r_message(std::byte* msg, std::uint16_t locate, const char (&ticker)[9])
+{
+    msg[0] = std::byte{'R'};
+    msg[1] = static_cast<std::byte>(locate >> 8);
+    msg[2] = static_cast<std::byte>(locate & 0xFF);
+    for (std::size_t i = 0; i < 8; ++i)
+    {
+        msg[11 + i] = static_cast<std::byte>(ticker[i]);
+    }
+}
+
+constexpr std::array<char, 8> AAPL{'A', 'A', 'P', 'L', ' ', ' ', ' ', ' '};
+constexpr std::array<char, 8> MSFT{'M', 'S', 'F', 'T', ' ', ' ', ' ', ' '};
+
+void test_decode_r_message()
+{
+    std::byte msg[mm::itch::RMessage::length]{};
+    put_r_message(msg, 14, "AAPL    ");
+
+    const auto f = mm::itch::detail::decode_r_message(msg);
+    CHECK_EQ(f.stock_locate, 14u);
+    CHECK(f.stock_ticker == AAPL);
+
+    put_r_message(msg, 0x1234, "MSFT    ");
+    CHECK_EQ(mm::itch::detail::decode_r_message(msg).stock_locate, 0x1234u);
+}
+
+void test_next_r_message_stops_at_first_non_r()
+{
+    // [R AAPL | R MSFT | D] = 39 + 39 + 19
+    std::byte datagram[39 + 39 + 19]{};
+    put_r_message(datagram, 14, "AAPL    ");
+    put_r_message(datagram + 39, 22, "MSFT    ");
+    datagram[78] = std::byte{'D'};
+
+    std::span<const std::byte> packet{datagram};
+    std::size_t                offset = 0;
+    mm::itch::RMessageFields   r{};
+
+    CHECK(mm::itch::next_r_message(packet, offset, r));
+    CHECK_EQ(offset, 39u);
+    CHECK_EQ(r.stock_locate, 14u);
+    CHECK(r.stock_ticker == AAPL);
+
+    CHECK(mm::itch::next_r_message(packet, offset, r));
+    CHECK_EQ(offset, 78u);
+    CHECK_EQ(r.stock_locate, 22u);
+    CHECK(r.stock_ticker == MSFT);
+
+    CHECK(!mm::itch::next_r_message(packet, offset, r));
+    CHECK_EQ(offset, 78u); // left pointing AT the D
+}
+
+void test_next_r_message_truncated_r_drops_the_tail()
+{
+    // a full R, then an R cut off after 20 bytes
+    std::byte datagram[39 + 20]{};
+    put_r_message(datagram, 14, "AAPL    ");
+    datagram[39] = std::byte{'R'};
+
+    std::span<const std::byte> packet{datagram};
+    std::size_t                offset = 0;
+    mm::itch::RMessageFields   r{};
+
+    CHECK(mm::itch::next_r_message(packet, offset, r));
+    CHECK(!mm::itch::next_r_message(packet, offset, r));
+    CHECK_EQ(offset, packet.size());
+
+    CHECK(!mm::itch::next_r_message(packet, offset, r)); // already at the end
+    CHECK_EQ(offset, packet.size());
+}
+
 } // namespace
 
 int main()
@@ -181,6 +259,9 @@ int main()
     test_read_be();
     test_decode_add_order();
     test_decode_delete_order();
+    test_decode_r_message();
+    test_next_r_message_stops_at_first_non_r();
+    test_next_r_message_truncated_r_drops_the_tail();
 
     // TODO: the same for (E), (X), (U). (U) matters most -- two adjacent uint64 order
     // refs at offsets 11 and 19, so a transposition is silent and would corrupt the map.

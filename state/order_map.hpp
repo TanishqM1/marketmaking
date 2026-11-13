@@ -45,7 +45,7 @@ class OrderMap
     // essentially, past .70, when we are doing multple lookups. It also has to be
     // a multiple of 2.
 
-    // 2^(16) slots x 16 B = 1MB, room for ~32,000 live orders at 0.5 load, ALL in L2 Cache!
+    // 2^(22) slots x 16 B = 64MB, room for ~2.1M live orders at 0.5 load (full-market peak ~1.93M).
     // TODO make this part dynamic, so we can chose different capacties at compile time.
 
     // static = class owns this variable, ONE copy.
@@ -65,7 +65,7 @@ class OrderMap
     // end up at an empty slot in the address, we know there was an error in the original ref.
     //
   public:
-    static constexpr std::size_t CAPACITY = 65536;    // 2^16 TOTAL capacity
+    static constexpr std::size_t CAPACITY = 4194304;  // 2^22 TOTAL capacity
     static constexpr std::size_t MASK = CAPACITY - 1; // (ref & mask) is GUARANTEED to be in range.
     static_assert((CAPACITY & MASK) == 0);
 
@@ -126,7 +126,7 @@ class OrderMap
     // using 128 because that's what the cache line boundaries for apple m4 silicon is. its just
     // what I got mane.
   private:
-    //   this reads as making an ARRAY of sizeof("ORDERENTRY") CAPACITY. aka 65536 or "CAPACITY"
+    //   this reads as making an ARRAY of sizeof("ORDERENTRY") CAPACITY. aka 4194304 or "CAPACITY"
     //   orders!
     alignas(128) OrderEntry
         slots_[CAPACITY]{}; // align on cache line boundaries, for the length of our CAPACITY.

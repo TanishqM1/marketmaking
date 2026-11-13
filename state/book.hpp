@@ -48,14 +48,15 @@ class Book
     }
 
     // ITCH price, not tick
-    void add(std::uint64_t ref, mm::Side side, std::uint32_t price, std::uint32_t qty) noexcept
+    void add(OrderMap& orders, std::uint64_t ref, mm::Side side, std::uint32_t price,
+             std::uint32_t qty) noexcept
     {
         std::uint32_t tick = price / TICK_SIZE;
         OrderEntry    order{.ref = ref, .remaining = qty, .abs_tick = tick, .side = side};
         std::uint32_t idx = tick - low_;
 
         // insertion error
-        if (!orders_.insert(order))
+        if (!orders.insert(order))
         {
             return;
         }
@@ -84,55 +85,55 @@ class Book
         }
     }
 
-    void execute(std::uint64_t ref, std::uint32_t qty) noexcept
+    void execute(OrderMap& orders, std::uint64_t ref, std::uint32_t qty) noexcept
     {
         // order lookup from ordermap.
-        OrderEntry* order = orders_.find(ref);
+        OrderEntry* order = orders.find(ref);
         // order not found
         if (order == nullptr)
         {
             return;
         }
-        reduce(order, qty);
+        reduce(orders, order, qty);
     }
 
-    void cancel(std::uint64_t ref, std::uint32_t qty) noexcept
+    void cancel(OrderMap& orders, std::uint64_t ref, std::uint32_t qty) noexcept
     {
-        OrderEntry* order = orders_.find(ref);
+        OrderEntry* order = orders.find(ref);
 
         if (order == nullptr)
         {
             return;
         }
-        reduce(order, qty);
+        reduce(orders, order, qty);
     }
 
-    void remove(std::uint64_t ref) noexcept
+    void remove(OrderMap& orders, std::uint64_t ref) noexcept
     {
         // find order, simply remove its entire qty
-        OrderEntry* order = orders_.find(ref);
+        OrderEntry* order = orders.find(ref);
 
         if (order == nullptr)
         {
             return;
         }
-        reduce(order, (*order).remaining);
+        reduce(orders, order, (*order).remaining);
     }
 
     // delete (remove) + add
-    void replace(std::uint64_t original_ref, std::uint64_t new_ref, std::uint32_t price,
-                 std::uint32_t qty) noexcept
+    void replace(OrderMap& orders, std::uint64_t original_ref, std::uint64_t new_ref,
+                 std::uint32_t price, std::uint32_t qty) noexcept
     {
         // find order, first remove it, then add it back.
-        OrderEntry* order = orders_.find(original_ref);
+        OrderEntry* order = orders.find(original_ref);
 
         if (order == nullptr)
         {
             return;
         }
         mm::Side side = (*order).side;
-        reduce(order, (*order).remaining);
-        add(new_ref, side, price, qty);
+        reduce(orders, order, (*order).remaining);
+        add(orders, new_ref, side, price, qty);
     }
 
     // qty == 0 -> that side is empty and `tick` is meaningless.
@@ -147,7 +148,6 @@ class Book
     }
 
   private:
-    OrderMap      orders_;
     alignas(128) std::uint32_t bids_[ARRAY_SIZE + 1]{}; // [ARRAY_SIZE] is a guard slot, always 0
     alignas(128) std::uint32_t asks_[ARRAY_SIZE + 1]{};
     std::uint16_t best_bid_ = NO_LEVEL;
@@ -156,7 +156,7 @@ class Book
     std::uint64_t bid_bits_[WORDS]{};
     std::uint64_t ask_bits_[WORDS]{};
 
-    void reduce(OrderEntry* order, std::uint32_t qty) noexcept
+    void reduce(OrderMap& orders, OrderEntry* order, std::uint32_t qty) noexcept
     {
         // if we want to reduce for more than we have, well, just reduce
         // with what we can (which is order.remaining).
@@ -174,7 +174,7 @@ class Book
         // if the order has nothing left, remove it from ordermap
         if ((*order).remaining == 0)
         {
-            orders_.erase(order);
+            orders.erase(order);
         }
         // if the tick (idx) is not in our bids_ or asks_, then return (its out of window)
         if (idx >= ARRAY_SIZE)

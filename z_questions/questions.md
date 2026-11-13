@@ -15,7 +15,7 @@ What does "on the wire" mean?
 
 Why does the size/order of the content we recieve not actually matter? Does it matter for our buffer?
 
-Order map: measure our per-book open-addressing map vs ONE shared direct array indexed by ITCH ref (orders[ref], with book_id back in the entry) — which wins on p99 for a real feed day?
+Order map: on a replayed real feed day, what's the peak live-order count (→ CAPACITY), and which wins on p99: our one shared map, per-symbol maps, or a direct array orders[ref]?
 
 ## Finance
 

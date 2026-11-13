@@ -1,3 +1,4 @@
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -84,7 +85,44 @@ OrderReplaceFields decode_replace_order(const std::byte* packet)
     return replace_order;
 }
 
+// read locate, but memcpy ticker since its TEXT. That means it is ALREADY in the correct
+// endianness!
+RMessageFields decode_r_message(const std::byte* packet)
+{
+    std::uint16_t       stock_locate = read_be16(packet, RMessage::stock_locate);
+    std::array<char, 8> stock_ticker;
+    std::memcpy(stock_ticker.data(), &packet[RMessage::stock_ticker], stock_ticker.size());
+    RMessageFields r_message{stock_locate, stock_ticker}; // make RMessageFields struct and return
+                                                          // it. we need locate : ticker for this.
+    return r_message;
+}
+
 } // namespace detail
+
+// check OOB, check if NOT rmessage, check packet size overflow
+// then, read the packet, move pointer and return true.
+bool next_r_message(std::span<const std::byte> packet, std::size_t& offset,
+                    RMessageFields& out) noexcept
+{
+    if (offset >= packet.size())
+    {
+        return false;
+    }
+    if (static_cast<char>(packet[offset + MessageHeader::msg_type]) != RMessage::type)
+    {
+        return false;
+    }
+    if (RMessage::length > packet.size() - offset)
+    {
+        offset = packet.size();
+        return false;
+    }
+    // change MEMORY directly! so we dont need to return it we simply read this address and make teh
+    // book (so long as this function returned true.)
+    out = detail::decode_r_message(packet.data() + offset);
+    offset += RMessage::length;
+    return true;
+}
 
 // "span" is a view over a contigous seuqence of objects it holds a pointer to the start of some
 // data, and a size. in our case, this is the start of the buffer, and the len of the packet.
@@ -247,6 +285,12 @@ void decode_packet(std::span<const std::byte> packet)
                 // remove original_order_ref's full remaining from its old level, erase it,
                 // then insert new_order_ref at the new price. all later messages use the new ref.
                 offset += OrderReplace::length;
+                break;
+            }
+            // TODO: unknown type never advances offset -> infinite loop. skip it by a per-type
+            // length table.
+            [[unlikely]] default:
+            {
                 break;
             }
         }

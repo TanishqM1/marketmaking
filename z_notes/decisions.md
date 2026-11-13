@@ -34,7 +34,9 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 
 | assumption | relied on by | breaks how |
 |---|---|---|
-| The feed only sends the 7 types we decode: A, F, E, C, X, D, U | `decode_packet` (`codec/itch.cpp`) — an unknown type never advances `offset` | any other type (S, R, P, Q…) → the hot loop spins forever on that byte |
+| After startup, the feed only sends the 7 types we decode: A, F, E, C, X, D, U | `decode_packet` (`codec/itch.cpp`) — an unknown type never advances `offset` | any other type (S, R, P, Q…) → the hot loop spins forever on that byte |
+| R messages arrive as **one burst at the start**, never later | `run_startup` ends at the first non-R; the hot switch has no R case | an intraday R (e.g. a new listing ⚠️) → the hot loop spins on it |
+| `trading_system` is running before the feed starts | `run_startup` | UDP drops anything sent before the socket binds → the R burst is lost, zero books, startup waits forever |
 | Add orders always have shares > 0 | the bitmap in `state/book.hpp` `add` | a qty-0 add sets a level's bit with nothing behind it → can become best with qty 0 |
 | The side byte is always `'B'` or `'S'` | `decode_add_order` — side starts as Buy, `'S'` → Sell | any other byte silently becomes a Buy |
 | ITCH order refs only increase (no strides of 65,536) | identity hash `ref & MASK` (`state/order_map.hpp`) | strided refs share low bits → one huge probe chain. Don't let the mock exchange issue refs like `symbol_id × 65536 + n` |
@@ -52,46 +54,67 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 | book API | handlers take plain values (ref, side, price, qty), not ITCH structs | the book stays independent of the feed format | `book.hpp` |
 | book API | handler bodies live in the header | the compiler only inlines bodies it can see — [cpp.md](cpp.md), inlining | `book.hpp`, `order_map.hpp` |
 | best bid/ask | **1-level bitmap** + `clz`/`ctz`, no summary word | write-up below | `book.hpp` |
-| order map | per-book flat open-addressing table, linear probing | write-up below | `order_map.hpp` |
+| order map | flat open-addressing table, linear probing | write-up below | `order_map.hpp` |
+| order map | **one map for every symbol**, a `Market` member; `Book` handlers take it as `OrderMap&` | refs are unique feed-wide and every message carries its locate. 1,000 books ≈ 34 MB, not ~1 GB of mostly-empty per-book maps; one number to size. Per-symbol maps are still a swap away if a benchmark says so | `book.hpp`, `startup.hpp` |
 | order map | identity hash `ref & MASK`; **skipped** Fibonacci hashing | refs increase, so low bits already spread; a multiply is ~3 cycles on *every* lookup for a pattern the feed doesn't produce | `order_map.hpp` |
 | order map | **backward-shift deletion**, not tombstones | tombstones filled the table; measured 10.8 s → 0.21 s — [data_structures.md](data_structures.md) | `order_map.hpp` `shift_delete` |
 | order map | entries stored **inline**, not an index of `{ref, ptr}` into a pool | 1 memory access instead of 2 dependent ones — write-up below | `order_map.hpp` |
 | order map | `OrderEntry` = **16 B**: `ref` 8 + `remaining` 4 + bit-fields `abs_tick:26`, `side:1`, `occupied:1` | 8 entries per line (was 4), table 2 MB → 1 MB. Max tick 42,949,672 < 2²⁶ (`static_assert`). Separate `occupied` bit because ITCH ref **can be 0**. Bit-fields compile to the same asm as hand-written masks (checked) | `order_map.hpp` |
-| order map | CAPACITY 65,536 for every book, no load-factor cap — **deferred** | needs real per-symbol peaks first | issue **#25** |
+| order map | CAPACITY **2²² = 4,194,304 (64 MB) total**; `Market` is `static` in `main` | public full-day replay peaks at ~1.93M live orders → 0.46 load. M4 bench, delete+add: 1M live → 2²¹ 72 ns, **2²² 48 ns**, 2²³ 41 ns; 1.93M live → 2²¹ **77 µs** (0.92 load, the cliff), **2²² 76 ns**, 2²³ 54 ns. Load-factor cap still not enforced; real per-feed peak still to measure | `order_map.hpp`, `main.cpp`, issue **#25** |
 | order map | hugepages — **deferred** | Linux-only; can't build or measure on macOS | issue **#24** |
 | receive | busy-poll with `MSG_DONTWAIT` | removes sleep/wake jitter (~5–50 µs ⚠️). Still one syscall per poll; kernel bypass impossible on macOS | `udp_receiver.cpp` |
 | decode | **trust exchange field values, validate framing.** Side: start as Buy, `'S'` → Sell; no rejection, no `std::optional` | firm practice — per-field checks cost latency for errors that don't happen. The real bug was `side` uninitialized (UB), which the default fixes | `itch.cpp` `decode_add_order` |
 | decode | no `default:` on the `MsgType` switch | `-Wswitch` then warns if a new enumerator has no `case` | `itch.cpp` |
 | decode | **keep** the 7 per-case length checks; don't hoist one `length_for(type)` check + one advance | asm: hoisting adds a 2nd indirect jump on the type byte → ⚠️ likely slower. Cleaner isn't worth slower | `itch.cpp` |
 | memory | no dynamic memory on the tick-to-trade thread after startup | judged on p99.9 — [hft_systems.md](hft_systems.md) | everywhere |
-| planned | `decode_packet<Handler>` so `codec/` never includes `state/`; `locate_to_book[65536]` → 500 static books | next milestone | `app/` |
+| startup | **separate startup loop** for the R burst; R kept **out of `MsgType`** | the hot switch compiles identical (127 instructions, asm checked). An R case in the hot switch reshuffles its compare tree (A: 2 → 3 compares) | `app/startup.cpp`, `itch.cpp` `next_r_message` |
+| startup | config = `TICKER,dollars` CSV, path from `argv[1]`; dollars → ITCH integer at load | locates change daily, so the config can't hold them — R supplies today's. Integer parse, never a float | `startup.cpp` `load_config` |
+| startup | config format is **strict**: no spaces, LF line endings, no trimming; any whitespace → throw with the line number | the file is generated, not hand-typed. A stray space in a ticker would silently never match the wire's R; strict makes it loud | `load_config` |
+| startup | before the first R, non-R datagrams are dropped; after it, the first non-R ends startup and the rest of that datagram is `leftover` | before any R there are no books, so nothing droppable matters; the leftover keeps the first orders | `handle_startup_packet` |
+| startup | config ticker with no R → warn and continue; duplicate R ticker or locate → **throw, refuse to start**; `main` catches, prints, exits 1 | startup checks run once, so they're free. A duplicate means a broken feed (e.g. two days replayed together); trading on miswired books is worse than not starting | `bind_r_message`, `report_missing_tickers` |
+| startup | `locate_to_book` = flat `uint16_t[65536]`; books = `std::vector<Book>` + `reserve` | direct index: no hash, no probe, no bounds check; 128 KB vs 512 KB for pointers. Book count is runtime-only; `reserve` → never reallocates | `startup.hpp` `Market` |
+| planned | `decode_packet<Handler>`; the handler gets only `books` (as a span) + `locate_to_book` + `orders`, never `config` | `codec/` never includes `state/`; the hot path can't reach the map or grow the vector | `app/` |
 
 ---
 
 ## Write-ups
 
 ### Order map — where it lives, and how it's laid out
-**Background.** Every E/X/D/U message names an order only by its `ref`. The book must turn that ref
-into `remaining`, `tick`, `side` — **on every message**. So the order map is the hottest lookup in
-the system, and its cost is mostly **how many cache lines it touches**.
+**Background.** Every E/X/D/U message names its order by `ref` **and** its symbol by `stock_locate`.
+Turning the ref into `remaining`, `tick`, `side` runs **on every message**, so the order map is the
+hottest lookup in the system. Its cost is mostly **how many cache lines and pages it touches**.
 
 | layout | how | wins | loses |
 |---|---|---|---|
-| **per-book open-addressing (ours)** | each `Book` owns a 65,536-slot table; `ref & MASK` + linear probe, inline entries | small, private to the core that owns the symbol; L2-hot | each book sized for *its own* peak → total = sum of peaks; hot names (AAPL) can overflow, cold names waste 1 MB (#25) |
-| one shared hash map per feed thread | same table, sized for every book the thread owns, `book_id` in the entry | sized for the **total** peak, which is far below the sum of peaks (names don't all peak together). ⚠️ the common firm design | `book_id` needs 9 bits for 500 books; only 4 spare in our 16 B entry |
-| one direct array `orders[ref]` | refs are day-unique and increasing → one load, no hashing (Charles Cooper's open-source ITCH book does this) | no probing at all | sized for the **whole day's** refs (100M+ → GBs, TLB pressure); refs are increasing but not sequential → holes; `book_id` comes back |
+| per-book (before) | each `Book` owned a 65,536-slot table | private per symbol: one name's burst can't slow another | 1,000 × 1 MB ≈ **1 GB**, mostly empty. Sized per symbol → sum of peaks; a busy name fills *its* table while others sit empty (#25); a quiet name gets 1 live entry per line |
+| **one shared map (ours)** | one `OrderMap` in `Market`; `Book` handlers take `OrderMap&` | sized for the **total** peak (names don't all peak together); quiet names pack ~4 live entries per line; 1 MB map + 34 MB of books; one number to size; fewer pages → TLB / hugepages | one burst (NVDA at the open) lengthens probes for everyone; must be sized for the whole feed |
+| direct array `orders[ref]` | refs are day-unique and increasing → one load, no hashing (Charles Cooper's open-source ITCH book) | no probing at all | sized for the **whole day's** refs (100M+ → GBs, TLB pressure); refs increase but aren't sequential → holes |
 | index `{ref, ptr}` + pool | table holds pointers into a separate entry pool | pointer stability | 2 dependent accesses — below |
 
-**Decision:** per-book for now. A single symbol's refs are sparse (one counter across all symbols),
-so a direct array per book would be mostly holes, and a small hash map stays hot.
-> ⚠️ firm internals aren't public. Open question in `z_questions/questions.md`: measure per-book
-> vs one shared direct array on p99 for a real feed day.
+No `book_id` in the entry: the message's own locate → `locate_to_book` gives the book. The 16 B
+entry is unchanged.
+
+**Decision:** one shared map. Refs are unique feed-wide, so splitting by symbol buys no correctness.
+`Book` went from 1,082,752 B to **34,048 B** (only the ladder). Per-symbol is still a swap away: give
+each book its own map and pass that one in.
+
+**Firm practice** ⚠️ not public. A common pattern: one map per feed-handler thread (so per exchange
+× per core), covering that thread's symbols. Split by **core** (no locks, no lines moving between
+cores), not by symbol. Per-symbol has real wins too (isolation, few names per core). Settle it by
+measuring on a replayed day: p50/p99 per message, probe-length histogram, RSS.
+
+**Example:** NVDA jumps from 5k to 80k live orders on news. Per-book 65,536 table → full, adds
+dropped. Shared 2²¹ table → load goes from 0.40 to 0.44.
+
+**Gotcha:** size = `next_pow2(2 × peak live orders across the feed)`. We use 2²² × 16 B = 64 MB for
+a ~1.93M public peak ⚠️ (one project's replay, not a spec). At that size `Market` can't live on
+main's 8 MB stack → it's `static`, and its pages are touched at startup.
 
 ### Order map — store entries inline, or an index of `{ref, ptr}` into a pool?
 **Option 1 — inline (ours).** The table *is* the storage: each 16 B slot holds the whole order,
 8 slots per 128 B line.
 ```
-slots_[]  65,536 × 16 B = 1 MB
+slots_[]  4,194,304 × 16 B = 64 MB
 ┌──────────┬──────────┬───────┬───────┐┌──────────┬──
 │ ref 1001 │ ref 5537 │ EMPTY │ EMPTY ││ ref 1004 │ ..
 │ rem,tick │ rem,tick │       │       ││ rem,tick │
