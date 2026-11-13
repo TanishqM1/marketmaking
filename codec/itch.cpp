@@ -287,6 +287,12 @@ void decode_packet(std::span<const std::byte> packet)
                 offset += OrderReplace::length;
                 break;
             }
+            // TODO: unknown type never advances offset -> infinite loop. skip it by a per-type
+            // length table.
+            [[unlikely]] default:
+            {
+                break;
+            }
         }
     }
 }

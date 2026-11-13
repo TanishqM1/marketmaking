@@ -245,7 +245,7 @@ void test_full_startup_sequence()
     CHECK(market.books.data() == books);
 
     // the book was built from the config's prev_close: $175.23 is inside its window
-    market.books[0].add(1, mm::Side::Buy, 1752300, 100);
+    market.books[0].add(market.orders, 1, mm::Side::Buy, 1752300, 100);
     CHECK_EQ(market.books[0].best_bid().tick, 17523u);
     CHECK_EQ(market.books[0].best_bid().qty, 100u);
 }

@@ -150,22 +150,30 @@ test/        mirrors the source tree
 Rule: `codec/` never includes `state/` (planned `decode_packet<Handler>`).
 
 ### Where the order map lives
-**One order map per `Book`**, owned by whichever core runs that symbol — order state follows the
-sharding.
+**One order map for every symbol**, a member of `Market` — not inside `Book`. ITCH refs are unique
+across the feed, and every message carries `stock_locate`, so the ref finds the order and the locate
+finds the book.
 ```
-locate_to_book[stock_locate] -> Book (one per traded symbol, in one reserved vector, ~1.08 MB)
-                                 ├─ orders_   open-addressing map, 65,536 × 16 B = 1 MB
-                                 ├─ bids_/asks_  4,097 × 4 B each, alignas(128) ≈ 32 KB
-                                 ├─ bid/ask bitmaps  64 words each = 1 KB
-                                 └─ best_bid_ / best_ask_ cursors, low_
+Market
+ ├─ orders           OrderMap, 65,536 × 16 B = 1 MB, keyed by ref   ← every symbol's orders
+ ├─ locate_to_book   uint16_t[65536] = 128 KB, locate → book index
+ └─ books            vector<Book>, 34,048 B each, back to back
+                      ├─ bids_/asks_  4,097 × 4 B each, alignas(128) ≈ 32 KB
+                      ├─ bid/ask bitmaps  64 words each = 1 KB
+                      └─ best_bid_ / best_ask_ cursors, low_
+
+E locate 14, ref 9001, qty 100  →  books[locate_to_book[14]].execute(orders, 9001, 100)
 ```
-500 books ≈ 540 MB — most of it cold order-map slots, which is the sizing problem in issue #25.
-Why this layout and not a shared map: [decisions.md](decisions.md).
+`Book`'s handlers take the map as their first argument (`OrderMap&`); `Book` holds only the ladder.
+1,000 books ≈ 34 MB instead of ~1 GB. ⚠️ 65,536 slots is now the **total** across all symbols
+(~32k live orders at 0.5 load) — fine for the mock, too small for a real day; resize from data.
+Gotcha: `Market` lives on `main`'s stack (~1.13 MB). A much bigger map (e.g. 2²¹ = 32 MB) won't fit
+the 8 MB stack — make `Market` `static` then, and pre-touch the map's pages at startup.
 
 ### Startup: config + R messages → books
 `app/startup.*` + `app/main.cpp`. Everything before the hot loop. It runs once, before trading, so
-it may allocate, throw, and use `std::map`. The hot path only ever touches `locate_to_book` and
-`books`.
+it may allocate, throw, and use `std::map`. The hot path only ever touches `locate_to_book`,
+`books` and `orders`.
 
 **Why two sources.** Nasdaq assigns locates **fresh every day**, so a config can't hold them. The
 config holds `TICKER,prev_close`; the feed's R messages (Stock Directory) say "AAPL is locate 14
@@ -199,6 +207,7 @@ main
 |---|---|---|
 | `config` | `std::map` ticker → `{prev_close, book}` | **no** — a tree, ~10 pointer chases per `find`; startup only |
 | `books` | `std::vector<Book>`, reserved once, never grows | **yes** — the actual work |
+| `orders` | one `OrderMap` for every symbol, ref → order | **yes** — one lookup per message |
 | `locate_to_book` | `std::array<uint16_t, 65536>`, locate → book index | **yes** — one 2 B load |
 | `leftover` | view of the rest of the datagram that ended startup | once, right after startup |
 | `seen_r_message` | has the R burst started yet? | no |
@@ -229,8 +238,8 @@ leftover = `[A | E]`. TSLA never got an R → reported.
 |---|---|---|
 | receive buffer | 64 KB alloc, **~1.4 KB hot** | holds one datagram; ~11 lines, permanently hot |
 | decode locals | **0** | SROA keeps the `Fields` structs in registers |
-| **order map** (per book) | **1 MB** | the only random-access structure → **the only real miss source** |
-| ladders (per book) | ~32 KB | sequential near the touch, stays hot |
+| **order map** (one, shared) | **1 MB** | the only random-access structure → **the only real miss source** |
+| ladders (per book) | ~33 KB (`sizeof(Book)` = 34,048) | sequential near the touch, stays hot |
 | bitmaps (per book) | 1 KB | scanned only when the best level empties |
 | the code | tens of KB | competes for L1i, and with data in the unified L2 |
 

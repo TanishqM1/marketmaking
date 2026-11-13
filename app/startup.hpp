@@ -33,6 +33,7 @@ struct Market
     std::map<std::array<char, 8>, SymbolConfig> config;
 
     std::vector<state::Book> books;
+    state::OrderMap          orders;
     // this instantiates an array where each element is a 2byte integer. The array holds "LOCATES"
     // elements.
     std::array<std::uint16_t, LOCATES> locate_to_book;
