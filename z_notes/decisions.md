@@ -34,7 +34,9 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 
 | assumption | relied on by | breaks how |
 |---|---|---|
-| The feed only sends the 7 types we decode: A, F, E, C, X, D, U | `decode_packet` (`codec/itch.cpp`) — an unknown type never advances `offset` | any other type (S, R, P, Q…) → the hot loop spins forever on that byte |
+| After startup, the feed only sends the 7 types we decode: A, F, E, C, X, D, U | `decode_packet` (`codec/itch.cpp`) — an unknown type never advances `offset` | any other type (S, R, P, Q…) → the hot loop spins forever on that byte |
+| R messages arrive as **one burst at the start**, never later | `run_startup` ends at the first non-R; the hot switch has no R case | an intraday R (e.g. a new listing ⚠️) → the hot loop spins on it |
+| `trading_system` is running before the feed starts | `run_startup` | UDP drops anything sent before the socket binds → the R burst is lost, zero books, startup waits forever |
 | Add orders always have shares > 0 | the bitmap in `state/book.hpp` `add` | a qty-0 add sets a level's bit with nothing behind it → can become best with qty 0 |
 | The side byte is always `'B'` or `'S'` | `decode_add_order` — side starts as Buy, `'S'` → Sell | any other byte silently becomes a Buy |
 | ITCH order refs only increase (no strides of 65,536) | identity hash `ref & MASK` (`state/order_map.hpp`) | strided refs share low bits → one huge probe chain. Don't let the mock exchange issue refs like `symbol_id × 65536 + n` |
@@ -64,7 +66,12 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 | decode | no `default:` on the `MsgType` switch | `-Wswitch` then warns if a new enumerator has no `case` | `itch.cpp` |
 | decode | **keep** the 7 per-case length checks; don't hoist one `length_for(type)` check + one advance | asm: hoisting adds a 2nd indirect jump on the type byte → ⚠️ likely slower. Cleaner isn't worth slower | `itch.cpp` |
 | memory | no dynamic memory on the tick-to-trade thread after startup | judged on p99.9 — [hft_systems.md](hft_systems.md) | everywhere |
-| planned | `decode_packet<Handler>` so `codec/` never includes `state/`; `locate_to_book[65536]` → 500 static books | next milestone | `app/` |
+| startup | **separate startup loop** for the R burst; R kept **out of `MsgType`** | the hot switch compiles identical (127 instructions, asm checked). An R case in the hot switch reshuffles its compare tree (A: 2 → 3 compares) | `app/startup.cpp`, `itch.cpp` `next_r_message` |
+| startup | config = `TICKER,dollars` CSV, path from `argv[1]`; dollars → ITCH integer at load | locates change daily, so the config can't hold them — R supplies today's. Integer parse, never a float | `startup.cpp` `load_config` |
+| startup | before the first R, non-R datagrams are dropped; after it, the first non-R ends startup and the rest of that datagram is `leftover` | before any R there are no books, so nothing droppable matters; the leftover keeps the first orders | `handle_startup_packet` |
+| startup | config ticker with no R → warn and continue; duplicate R or locate → first wins | dev-friendly. ⚠️ a firm would likely alert or abort for a production universe | `add_book`, `print_startup_summary` |
+| startup | `locate_to_book` = flat `uint16_t[65536]`; books = `std::vector<Book>` + `reserve` | direct index: no hash, no probe, no bounds check; 128 KB vs 512 KB for pointers. Book count is runtime-only; `reserve` → never reallocates | `startup.hpp` `Market` |
+| planned | `decode_packet<Handler>`; the handler gets only `books` (as a span) + `locate_to_book`, never `config` | `codec/` never includes `state/`; the hot path can't reach the map or grow the vector | `app/` |
 
 ---
 
