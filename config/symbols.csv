@@ -1,6 +1,6 @@
 # TODO: placeholder universe. Replace with real tickers + previous closes for the replay date;
 # tickers must match the feed's R messages exactly, or those symbols never get a book.
-# ticker,prev_close (dollars, at most 4 decimals)
+# TICKER,PRICE: dollars with at most 4 decimals; no spaces, LF line endings
 AAPL,175.23
 MSFT,410.15
 NVDA,135.40

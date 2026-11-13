@@ -176,20 +176,21 @@ them at start of day.
 main
  ├─ std::ifstream config_file{argv[1]}   can't open → "cannot open config", exit 1
  ├─ Market market;                  constructor: locate_to_book = all NOT_TRADED
+ ├─ UDP_Receiver receiver{8080}     bind BEFORE the feed starts — UDP drops anything sent earlier
+ ├─ try { load_config, run_startup }  any throw → "startup failed: <why>", exit 1
  ├─ load_config(market, config_file)
- │                                  per line "AAPL,175.23": trim, skip blank / #,
+ │                                  per line "AAPL,175.23": skip blank / #; bad line → throw "config line N: bad entry \"<line>\"",
  │                                  pad ticker to 8 ("AAPL    "), dollars → 1752300,
  │                                  config[ticker] = {prev_close, NOT_TRADED}
  │                                  end: books.reserve(config.size())
- ├─ UDP_Receiver receiver{8080}     bind BEFORE the feed starts — UDP drops anything sent earlier
  ├─ run_startup(market, receiver)   busy-poll receive() → handle_startup_packet until it says done
  │    ├─ handle_startup_packet      one datagram:
  │    │    while next_r_message     codec/: R at offset? decode it, offset += 39
- │    │        add_book             app/: ticker in config, no book yet, locate free →
+ │    │        bind_r_message       app/: not in config → skip; ticker or locate already bound → throw; else
  │    │                               books.emplace_back(prev_close),
  │    │                               locate_to_book[locate] = i, config[ticker].book = i
  │    │    then: no R seen yet → drop it | all R → keep reading | else leftover = rest → done
- │    └─ print_startup_summary      "N of M symbols have books" + every ticker that got no R
+ │    └─ report_missing_tickers     every config ticker that got no R → stderr
  ├─ decode_packet(market.leftover)  the first orders after the last R
  └─ hot loop
 ```

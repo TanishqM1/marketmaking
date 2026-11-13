@@ -1,6 +1,6 @@
 ---
 name: bypass
-description: Override the project's no-code-writing rule for a single request. Use when the user invokes /bypass — write the requested code, then explain and justify it concisely.
+description: Override the project's no-code-writing rule for a single request. Use when the user invokes /bypass — write the requested code, then summarize it briefly.
 ---
 
 # bypass
@@ -13,31 +13,17 @@ of it, and you give guidance, debugging, and review only.
 - Do not ask permission, restate the rule, or offer guidance instead.
 - Scope is this request only. The next message reverts to guidance-only.
 
-## Required output, in this order
+## After the code
 
-**1. The code.**
+Keep the reply short, concise and clear. Use no fixed sections or headings.
 
-**2. What it does** — brief. Focus on anything non-obvious; skip narrating the obvious parts.
-
-**3. Justification, three short points.** A line or two each, not paragraphs:
-
-- **Safe** — no UB, no leaks, no unit/type confusion. Name the specific hazard avoided where
-  there was one (misaligned load, narrowing conversion, signed overflow, dangling view into a
-  receive buffer).
-- **Fast** — why this is the right cost. Be concrete: allocations (ideally zero), copies, cache
-  behavior, branch predictability, syscalls. Say what the dominant cost actually is.
-- **Sound for a quant system** — integer prices, deterministic/replayable, errors handled at the
-  trust boundary, nothing bypassable that shouldn't be, layer/dependency rules respected.
-
-## Be honest in the justification
-
-It's a review, not a rubber stamp. If something is a placeholder, slower than it could be, or a
-deliberate tradeoff, **say so in that section** instead of manufacturing a defense. "This
-allocates — fine here because it's startup, would be wrong on the hot path" is a good line.
-"Optimal" with no evidence is not.
-
-Never claim a performance win as measured when it hasn't been. Unmeasured means "should be
-cheaper, worth profiling."
+- Say what changed in a few lines. Skip anything obvious.
+- Use a concrete example wherever you can, e.g. `" AAPL"` → stored as `" AAPL   "` → never
+  matches the wire's `"AAPL    "`.
+- Give the test result in one line.
+- Raise a safety or speed concern only if there is a real one. Be honest about placeholders
+  and tradeoffs ("allocates — fine at startup, wrong on the hot path"). Never call an
+  unmeasured win measured.
 
 ## Still applies
 

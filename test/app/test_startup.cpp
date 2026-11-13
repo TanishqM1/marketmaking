@@ -93,6 +93,34 @@ bool price_rejected(const std::string& price_text)
     return config_throws("AAPL," + price_text + "\n");
 }
 
+std::string config_error_message(const std::string& text)
+{
+    Market             market;
+    std::istringstream in{text};
+    try
+    {
+        mm::app::load_config(market, in);
+    }
+    catch (const std::runtime_error& e)
+    {
+        return e.what();
+    }
+    return "";
+}
+
+std::string startup_error_message(Market& market, std::span<const std::byte> packet)
+{
+    try
+    {
+        mm::app::handle_startup_packet(market, packet);
+    }
+    catch (const std::runtime_error& e)
+    {
+        return e.what();
+    }
+    return "";
+}
+
 // ---------------------------------------------------------------------------
 // prices: dollars text -> ITCH integer units (4 implied decimals). No float anywhere.
 // ---------------------------------------------------------------------------
@@ -128,7 +156,7 @@ void test_config_prices()
 void test_load_config()
 {
     Market             market;
-    std::istringstream in{"# ticker,prev_close\n\n  AAPL , 175.23 \r\nMSFT,410.15\nNVDALONG,1\n"};
+    std::istringstream in{"# ticker,prev_close\n\nAAPL,175.23\nMSFT,410.15\nNVDALONG,1\n"};
     mm::app::load_config(market, in);
 
     CHECK_EQ(market.config.size(), 3u);
@@ -147,7 +175,19 @@ void test_load_config_rejects_bad_lines()
     CHECK(config_throws("AAPL,\n"));               // empty price
     CHECK(config_throws("AAPL,abc\n"));            // not a number
     CHECK(config_throws("AAPL,1\nAAPL,2\n"));      // duplicate
+    CHECK(config_throws(" AAPL,175.23\n"));        // space before ticker
+    CHECK(config_throws("AAPL ,175.23\n"));        // space after ticker
+    CHECK(config_throws("AA PL,175.23\n"));        // space inside ticker
+    CHECK(config_throws("AAPL\t,175.23\n"));       // tab in ticker
+    CHECK(config_throws("AAPL, 175.23\n"));        // space before price
+    CHECK(config_throws("AAPL,175.23 \n"));        // space after price
+    CHECK(config_throws("AAPL,175.23\r\n"));       // Windows line ending
+    CHECK(config_throws("AAPL,1\n\r\n"));          // Windows blank line
     CHECK(!config_throws("# only a comment\n\n")); // empty config is allowed
+
+    // the error names the line and quotes it
+    CHECK(config_error_message("AAPL,1\nMSFT ,2\n") == "config line 2: bad entry \"MSFT ,2\"");
+    CHECK(config_error_message("AAPL,1\nAAPL,2\n") == "config line 2: duplicate ticker \"AAPL,2\"");
 }
 
 // ---------------------------------------------------------------------------
@@ -185,22 +225,19 @@ void test_full_startup_sequence()
     CHECK_EQ(market.locate_to_book[14], 0u);
     CHECK_EQ(market.locate_to_book[7], Market::NOT_TRADED);
 
-    // 3) [R MSFT 22 | R AAPL 30 | A ...]: AAPL already has a book, so locate 30 is ignored;
-    //    the A ends startup and everything from it on is the leftover
-    std::byte last[39 + 39 + 36]{};
+    // 3) [R MSFT 22 | A ...]: the A ends startup and everything from it on is the leftover
+    std::byte last[39 + 36]{};
     put_r_message(last, 22, "MSFT    ");
-    put_r_message(last + 39, 30, "AAPL    ");
-    last[78] = std::byte{'A'};
+    last[39] = std::byte{'A'};
     CHECK(mm::app::handle_startup_packet(market, last));
 
     CHECK_EQ(market.books.size(), 2u);
     CHECK_EQ(market.locate_to_book[22], 1u);
-    CHECK_EQ(market.locate_to_book[30], Market::NOT_TRADED);
     CHECK_EQ(market.config.at(AAPL).book, 0u);
     CHECK_EQ(market.config.at(MSFT).book, 1u);
     CHECK_EQ(market.config.at(TSLA).book, Market::NOT_TRADED); // never got an R -> warned about
 
-    CHECK(market.leftover.data() == last + 78);
+    CHECK(market.leftover.data() == last + 39);
     CHECK_EQ(market.leftover.size(), 36u);
     CHECK(market.leftover[0] == std::byte{'A'});
 
@@ -230,19 +267,35 @@ void test_non_r_packet_after_r_is_all_leftover()
     CHECK_EQ(market.leftover.size(), sizeof(orders));
 }
 
-void test_duplicate_locate_is_ignored()
+void test_duplicate_r_message_throws()
 {
-    Market market;
-    load_three_symbols(market);
-
-    std::byte packet[39 + 39]{};
-    put_r_message(packet, 14, "AAPL    ");
-    put_r_message(packet + 39, 14, "MSFT    ");
-    CHECK(!mm::app::handle_startup_packet(market, packet));
-
-    CHECK_EQ(market.books.size(), 1u);
-    CHECK_EQ(market.locate_to_book[14], 0u); // first R wins
-    CHECK_EQ(market.config.at(MSFT).book, Market::NOT_TRADED);
+    // same locate for two tickers
+    {
+        Market market;
+        load_three_symbols(market);
+        std::byte packet[39 + 39]{};
+        put_r_message(packet, 14, "AAPL    ");
+        put_r_message(packet + 39, 14, "MSFT    ");
+        CHECK(startup_error_message(market, packet) == "duplicate R message: MSFT     locate 14");
+    }
+    // same ticker on two locates
+    {
+        Market market;
+        load_three_symbols(market);
+        std::byte packet[39 + 39]{};
+        put_r_message(packet, 14, "AAPL    ");
+        put_r_message(packet + 39, 30, "AAPL    ");
+        CHECK(startup_error_message(market, packet) == "duplicate R message: AAPL     locate 30");
+    }
+    // a ticker outside the config is skipped, never a duplicate
+    {
+        Market market;
+        load_three_symbols(market);
+        std::byte packet[39 + 39]{};
+        put_r_message(packet, 7, "ZZZZ    ");
+        put_r_message(packet + 39, 8, "ZZZZ    ");
+        CHECK(startup_error_message(market, packet).empty());
+    }
 }
 
 void test_truncated_r_is_dropped_and_startup_continues()
@@ -268,7 +321,7 @@ int main()
     test_new_market();
     test_full_startup_sequence();
     test_non_r_packet_after_r_is_all_leftover();
-    test_duplicate_locate_is_ignored();
+    test_duplicate_r_message_throws();
     test_truncated_r_is_dropped_and_startup_continues();
 
     if (failures == 0)

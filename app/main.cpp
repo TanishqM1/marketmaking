@@ -1,3 +1,4 @@
+#include <exception>
 #include <fstream>
 #include <iostream>
 
@@ -24,15 +25,23 @@ int main(int argc, char** argv)
 
     // create a new market that will hold the locate : book mapping!
     mm::app::Market market;
-    // using config load up market data, so we have locate :  book (with prev_close) setup.
-    mm::app::load_config(market, config_file);
 
     // instantiate receiver socket
     mm::transport::UDP_Receiver receiver{8080};
     bool                        m_running = true;
 
-    // instantiate market structure using config + rmessages
-    mm::app::run_startup(market, receiver);
+    try
+    {
+        // using config load up market data, so we have locate :  book (with prev_close) setup.
+        mm::app::load_config(market, config_file);
+        // instantiate market structure using config + rmessages
+        mm::app::run_startup(market, receiver);
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "startup failed: " << e.what() << '\n';
+        return 1;
+    }
     mm::itch::decode_packet(market.leftover);
 
     // poll receieve
