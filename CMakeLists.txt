@@ -86,10 +86,16 @@ add_library(mm_transport STATIC
 target_include_directories(mm_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mm_transport PUBLIC mm_types PRIVATE mm_warnings mm_sanitizers)
 
+add_library(mm_app STATIC
+    app/startup.cpp
+)
+target_include_directories(mm_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mm_app PUBLIC mm_codec mm_transport mm_types PRIVATE mm_warnings mm_sanitizers)
+
 add_executable(trading_system
     app/main.cpp
 )
-target_link_libraries(trading_system PRIVATE mm_transport mm_codec mm_warnings mm_sanitizers)
+target_link_libraries(trading_system PRIVATE mm_app mm_warnings mm_sanitizers)
 
 # ---------------------------------------------------------------------------
 # LTO (Link Time Optimization) -- Release only.
@@ -111,7 +117,7 @@ include(CheckIPOSupported)
 check_ipo_supported(RESULT MM_LTO_OK OUTPUT MM_LTO_WHY)
 
 if(MM_LTO_OK)
-    set_property(TARGET trading_system mm_transport mm_codec
+    set_property(TARGET trading_system mm_app mm_transport mm_codec
                  PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 else()
     message(WARNING "LTO unavailable, building without it: ${MM_LTO_WHY}")

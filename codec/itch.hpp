@@ -52,21 +52,23 @@ enum class MsgType : char
     OrderCancel            = 'X',
     OrderDelete            = 'D',
     OrderReplace           = 'U',
-    RMessage               = 'R',
 };
 
 // (R) R Message
 
 struct RMessage
 {
+    static constexpr char        type         = 'R';
     static constexpr std::size_t stock_locate = 1;
     static constexpr std::size_t stock_ticker = 11; // 8 bytes
-    static constexpr std::size_t length       = 39;
+    static constexpr std::size_t inverse_indicator =
+        38; // 1 byte -- IGNORE, FOR TESTING ONLY, NEVER READ.
+    static constexpr std::size_t length = 39;
 };
 
 struct RMessageFields
 {
-    std::uint16_t       stock_locate = 1;
+    std::uint16_t       stock_locate;
     std::array<char, 8> stock_ticker;
 };
 
@@ -194,6 +196,11 @@ struct OrderReplaceFields
 };
 
 void decode_packet(std::span<const std::byte> packet);
+
+// check if we are at a r message, decode it, initialize books and add to map, and then continue.
+// if its NOT a r map, then end the loop, and trading has begun!
+[[nodiscard]] bool next_r_message(std::span<const std::byte> packet, std::size_t& offset,
+                                  RMessageFields& out) noexcept;
 
 // Per-message decoders. `detail` means "do not call directly" -- these assume the message
 // already fits, because decode_packet bounds-checks before dispatching. Exposed only so
