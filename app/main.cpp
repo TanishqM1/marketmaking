@@ -24,7 +24,8 @@ int main(int argc, char** argv)
     }
 
     // create a new market that will hold the locate : book mapping!
-    mm::app::Market market;
+    // static to preallocate fixed space and avoid segfault
+    static mm::app::Market market;
 
     // instantiate receiver socket
     mm::transport::UDP_Receiver receiver{8080};

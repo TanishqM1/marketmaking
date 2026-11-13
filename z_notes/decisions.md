@@ -60,7 +60,7 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 | order map | **backward-shift deletion**, not tombstones | tombstones filled the table; measured 10.8 s → 0.21 s — [data_structures.md](data_structures.md) | `order_map.hpp` `shift_delete` |
 | order map | entries stored **inline**, not an index of `{ref, ptr}` into a pool | 1 memory access instead of 2 dependent ones — write-up below | `order_map.hpp` |
 | order map | `OrderEntry` = **16 B**: `ref` 8 + `remaining` 4 + bit-fields `abs_tick:26`, `side:1`, `occupied:1` | 8 entries per line (was 4), table 2 MB → 1 MB. Max tick 42,949,672 < 2²⁶ (`static_assert`). Separate `occupied` bit because ITCH ref **can be 0**. Bit-fields compile to the same asm as hand-written masks (checked) | `order_map.hpp` |
-| order map | CAPACITY 65,536 **total**, no load-factor cap — **deferred** | needs the peak live-order count across the feed first | issue **#25** (written for per-book maps) |
+| order map | CAPACITY **2²² = 4,194,304 (64 MB) total**; `Market` is `static` in `main` | public full-day replay peaks at ~1.93M live orders → 0.46 load. M4 bench, delete+add: 1M live → 2²¹ 72 ns, **2²² 48 ns**, 2²³ 41 ns; 1.93M live → 2²¹ **77 µs** (0.92 load, the cliff), **2²² 76 ns**, 2²³ 54 ns. Load-factor cap still not enforced; real per-feed peak still to measure | `order_map.hpp`, `main.cpp`, issue **#25** |
 | order map | hugepages — **deferred** | Linux-only; can't build or measure on macOS | issue **#24** |
 | receive | busy-poll with `MSG_DONTWAIT` | removes sleep/wake jitter (~5–50 µs ⚠️). Still one syscall per poll; kernel bypass impossible on macOS | `udp_receiver.cpp` |
 | decode | **trust exchange field values, validate framing.** Side: start as Buy, `'S'` → Sell; no rejection, no `std::optional` | firm practice — per-field checks cost latency for errors that don't happen. The real bug was `side` uninitialized (UB), which the default fixes | `itch.cpp` `decode_add_order` |
@@ -106,16 +106,15 @@ measuring on a replayed day: p50/p99 per message, probe-length histogram, RSS.
 **Example:** NVDA jumps from 5k to 80k live orders on news. Per-book 65,536 table → full, adds
 dropped. Shared 2²¹ table → load goes from 0.40 to 0.44.
 
-**Gotcha:** 65,536 slots is now the **total** (~32k live orders at 0.5 load). Fine for the mock,
-too small for a real day. Size = `next_pow2(2 × peak live orders across the feed)`, e.g. 2²² × 16 B =
-64 MB ⚠️ illustrative. At that size `Market` can't stay on main's 8 MB stack → make it `static`
-and pre-touch its pages at startup.
+**Gotcha:** size = `next_pow2(2 × peak live orders across the feed)`. We use 2²² × 16 B = 64 MB for
+a ~1.93M public peak ⚠️ (one project's replay, not a spec). At that size `Market` can't live on
+main's 8 MB stack → it's `static`, and its pages are touched at startup.
 
 ### Order map — store entries inline, or an index of `{ref, ptr}` into a pool?
 **Option 1 — inline (ours).** The table *is* the storage: each 16 B slot holds the whole order,
 8 slots per 128 B line.
 ```
-slots_[]  65,536 × 16 B = 1 MB
+slots_[]  4,194,304 × 16 B = 64 MB
 ┌──────────┬──────────┬───────┬───────┐┌──────────┬──
 │ ref 1001 │ ref 5537 │ EMPTY │ EMPTY ││ ref 1004 │ ..
 │ rem,tick │ rem,tick │       │       ││ rem,tick │

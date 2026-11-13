@@ -63,7 +63,7 @@ constexpr std::uint64_t colliding(std::uint64_t base, std::uint64_t n)
 
 void test_empty_map_finds_nothing()
 {
-    OrderMap m;
+    static OrderMap m;
     CHECK(m.find(1) == nullptr);
     CHECK(m.find(0) == nullptr); // a zeroed slot (ref 0) must not read as a hit
     CHECK(m.find(0xFFFF'FFFF'FFFF'FFFFull) == nullptr);
@@ -71,8 +71,8 @@ void test_empty_map_finds_nothing()
 
 void test_insert_then_find()
 {
-    OrderMap m;
-    auto     e = make_entry(1029485761, 500, 17525, mm::Side::Sell);
+    static OrderMap m;
+    auto            e = make_entry(1029485761, 500, 17525, mm::Side::Sell);
     CHECK(m.insert(e));
 
     OrderEntry* got = m.find(1029485761);
@@ -89,8 +89,8 @@ void test_find_returns_mutable_pointer()
 {
     // find() must hand back a pointer INTO the table, not a copy -- the book
     // decrements `remaining` in place rather than paying a second lookup.
-    OrderMap m;
-    auto     e = make_entry(777, 500);
+    static OrderMap m;
+    auto            e = make_entry(777, 500);
     CHECK(m.insert(e));
 
     OrderEntry* p = m.find(777);
@@ -106,7 +106,7 @@ void test_collision_both_findable()
 {
     // THE test for linear probing. Both refs hash to the same slot; the second must
     // probe forward on insert, and find() must walk past the first to reach it.
-    OrderMap            m;
+    static OrderMap     m;
     const std::uint64_t a = colliding(5313, 0);
     const std::uint64_t b = colliding(5313, 1);
     CHECK_EQ(a & OrderMap::MASK, b & OrderMap::MASK); // same home slot
@@ -129,7 +129,7 @@ void test_long_probe_chain()
 {
     // 64 refs all on one home slot. Exercises a 64-long chain and wrap-around
     // arithmetic if the home slot is near the end of the array.
-    OrderMap            m;
+    static OrderMap     m;
     constexpr int       N    = 64;
     const std::uint64_t base = OrderMap::CAPACITY - 3; // deliberately near the end
 
@@ -150,8 +150,8 @@ void test_long_probe_chain()
 
 void test_erase_then_not_found()
 {
-    OrderMap m;
-    auto     e = make_entry(12345);
+    static OrderMap m;
+    auto            e = make_entry(12345);
     CHECK(m.insert(e));
     CHECK(m.find(12345) != nullptr);
 
@@ -165,7 +165,7 @@ void test_erase_middle_of_chain()
     // a, b, c all share a home slot -> stored at idx, idx+1, idx+2.
     // Erase `a` (the FIRST). If erase just blanks the slot to EMPTY without shifting b and c
     // back, find(b) stops there and reports "not in the map" even though b is one slot on.
-    OrderMap            m;
+    static OrderMap     m;
     const std::uint64_t a = colliding(900, 0);
     const std::uint64_t b = colliding(900, 1);
     const std::uint64_t c = colliding(900, 2);
@@ -191,8 +191,8 @@ void test_erase_middle_of_chain()
 void test_erase_then_reinsert()
 {
     // An erased slot must be WRITABLE again.
-    OrderMap m;
-    auto     e1 = make_entry(555, 10);
+    static OrderMap m;
+    auto            e1 = make_entry(555, 10);
     CHECK(m.insert(e1));
     m.erase(555);
 
@@ -208,8 +208,8 @@ void test_reinsert_does_not_duplicate()
 {
     // Inserting a ref that's already present must be REJECTED and leave the original
     // untouched -- otherwise erase() removes one copy and find() returns the stale other.
-    OrderMap m;
-    auto     e1 = make_entry(888, 10);
+    static OrderMap m;
+    auto            e1 = make_entry(888, 10);
     CHECK(m.insert(e1));
     auto e2 = make_entry(888, 20);
     CHECK(!m.insert(e2)); // duplicate -> false
@@ -227,7 +227,7 @@ void test_churn()
     // Insert/erase repeatedly on colliding refs. Every erase shifts the chain back, so
     // the table never fills up with dead slots.
     // If this hangs, probing has no EMPTY slot left to terminate on.
-    OrderMap m;
+    static OrderMap m;
     for (int round = 0; round < 500; ++round)
     {
         for (int i = 0; i < 20; ++i)
@@ -253,10 +253,10 @@ void test_churn()
 
 void test_many_distinct_refs()
 {
-    // 8192 unrelated refs = 12.5% load factor. Everything must still be findable,
+    // 8192 unrelated refs. Everything must still be findable,
     // and nothing must collide into a wrong answer.
-    OrderMap      m;
-    constexpr int N = 8192;
+    static OrderMap m;
+    constexpr int   N = 8192;
     for (int i = 0; i < N; ++i)
     {
         auto e = make_entry(1'000'000ull + static_cast<std::uint64_t>(i) * 7919,
@@ -276,7 +276,7 @@ void test_erase_absent_is_safe()
 {
     // Normal at start of day: cancels/deletes arrive for orders whose Add we never saw.
     // Must not corrupt the table or crash.
-    OrderMap m;
+    static OrderMap m;
     m.erase(42);
     auto e = make_entry(42, 7);
     CHECK(m.insert(e));
@@ -287,11 +287,11 @@ void test_erase_absent_is_safe()
 void test_monotonic_refs_never_degrade()
 {
     // THE regression test for tombstones. ITCH refs only go UP, so `ref & MASK` sweeps every
-    // slot in turn. With tombstones, after ~65k adds no EMPTY slot was left and every insert /
-    // missing-ref find scanned all 65,536 slots. Here: 4 full sweeps with only 16 live orders,
+    // slot in turn. With tombstones, after CAPACITY adds no EMPTY slot was left and every insert /
+    // missing-ref find scanned every slot. Here: 4 full sweeps with only 16 live orders,
     // then 20,000 misses. With tombstones this takes ~1.3 billion slot reads (seconds);
     // with backward shift it is instant. If this test is slow, tombstones are back.
-    OrderMap            m;
+    static OrderMap         m;
     constexpr std::uint64_t N    = 4 * OrderMap::CAPACITY;
     constexpr std::uint64_t LIVE = 16;
     for (std::uint64_t ref = 1; ref <= N; ++ref)
@@ -314,10 +314,10 @@ void test_shift_keeps_entry_before_its_home()
     // Erase a: b must move back to H (its home), and c must move to H+1 (its home).
     // Then erase b's NEW slot via ref: c must stay at H+1 -- moving it to H would put it
     // before its home, where find() never looks.
-    OrderMap            m;
-    const std::uint64_t H = 777;
-    const std::uint64_t a = colliding(H, 0);
-    const std::uint64_t b = colliding(H, 1);
+    static OrderMap     m;
+    const std::uint64_t H  = 777;
+    const std::uint64_t a  = colliding(H, 0);
+    const std::uint64_t b  = colliding(H, 1);
     const std::uint64_t c = colliding(H + 1, 1);
     auto ea = make_entry(a, 1);
     auto eb = make_entry(b, 2);
@@ -343,11 +343,12 @@ void test_random_ops_match_reference()
 {
     // Random insert/erase/find against std::unordered_map as the reference answer.
     // Refs are packed into a few home slots near the END of the table so clusters are long,
-    // overlap, and wrap past index 65535 -> 0: every branch of the shift gets exercised.
-    OrderMap                                     m;
+    // overlap, and wrap past the last index -> 0: every branch of the shift gets exercised.
+    static OrderMap                                  m;
     std::unordered_map<std::uint64_t, std::uint32_t> ref_model;
-    std::uint64_t                                rng = 0x9E3779B97F4A7C15ull;
-    auto next = [&rng]() {
+    std::uint64_t                                    rng  = 0x9E3779B97F4A7C15ull;
+    auto                                             next = [&rng]()
+    {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
@@ -400,7 +401,7 @@ void test_random_ops_match_reference()
 void test_ref_zero_is_a_valid_key()
 {
     // ITCH can send ref 0, so EMPTY lives in its own bit, not in ref == 0
-    OrderMap m;
+    static OrderMap m;
     CHECK(m.find(0) == nullptr);
     CHECK(m.insert(make_entry(0, 77)));
     CHECK(m.find(0) != nullptr);
@@ -416,7 +417,7 @@ void test_packed_fields_round_trip()
 {
     // the largest possible tick (UINT32_MAX price / 100) must not bleed into the side/occupied bits
     constexpr std::uint32_t max_tick = 0xFFFFFFFFu / 100;
-    OrderMap                m;
+    static OrderMap         m;
     CHECK(m.insert(make_entry(1, 10, max_tick, mm::Side::Sell)));
     CHECK(m.insert(make_entry(2, 10, max_tick, mm::Side::Buy)));
     CHECK(m.insert(make_entry(3, 10, 0, mm::Side::Sell)));

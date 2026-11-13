@@ -129,7 +129,7 @@ TCP exec reports (ack/fill/reject) -> parse -> OMS -> position -> strategy
 | no kernel bypass, sockets only | NIC DMAs into user memory (DPDK / ef_vi / Onload) |
 | no core pinning/isolation, CAT, DDIO, hugepages | `isolcpus`, IRQ affinity, CAT, DDIO, hugepages |
 | no sharding yet | shard symbols across cores, correlated names together |
-| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1–2 MB L2 **per core** → a 1 MB map is borderline L2/L3 there |
+| 128 B lines, 16 MB L2 shared per cluster | 64 B lines, ~1–2 MB L2 **per core** → our 64 MB map is L3/DRAM either way |
 | latency numbers are macOS-socket numbers | tuned bypass, tick-to-trade ~1–5 µs (FPGA ~10s–100s ns) |
 | P&L meaningless (replay doesn't react, fake fills) | real matching, queue position modelled |
 
@@ -155,7 +155,7 @@ across the feed, and every message carries `stock_locate`, so the ref finds the 
 finds the book.
 ```
 Market
- ├─ orders           OrderMap, 65,536 × 16 B = 1 MB, keyed by ref   ← every symbol's orders
+ ├─ orders           OrderMap, 2²² = 4,194,304 × 16 B = 64 MB, keyed by ref   ← every symbol's orders
  ├─ locate_to_book   uint16_t[65536] = 128 KB, locate → book index
  └─ books            vector<Book>, 34,048 B each, back to back
                       ├─ bids_/asks_  4,097 × 4 B each, alignas(128) ≈ 32 KB
@@ -165,10 +165,11 @@ Market
 E locate 14, ref 9001, qty 100  →  books[locate_to_book[14]].execute(orders, 9001, 100)
 ```
 `Book`'s handlers take the map as their first argument (`OrderMap&`); `Book` holds only the ladder.
-1,000 books ≈ 34 MB instead of ~1 GB. ⚠️ 65,536 slots is now the **total** across all symbols
-(~32k live orders at 0.5 load) — fine for the mock, too small for a real day; resize from data.
-Gotcha: `Market` lives on `main`'s stack (~1.13 MB). A much bigger map (e.g. 2²¹ = 32 MB) won't fit
-the 8 MB stack — make `Market` `static` then, and pre-touch the map's pages at startup.
+1,000 books ≈ 34 MB instead of ~1 GB. 2²² slots hold the public full-market peak (~1.93M live
+orders) at 0.46 load. `Market` is ~65 MB → `static` in `main` (a 64 MB stack local segfaults before
+`main`'s first line: exit 139). Its constructor zero-fills the map, so all pages are faulted in at
+startup — measured RSS 65.5 MB before the first R. Tests build `Market` on the heap and use `static`
+maps. ⚠️ the pre-touch is implicit (the zero-fill); firms make it explicit with `mlock` — #24.
 
 ### Startup: config + R messages → books
 `app/startup.*` + `app/main.cpp`. Everything before the hot loop. It runs once, before trading, so
@@ -183,7 +184,7 @@ them at start of day.
 ```
 main
  ├─ std::ifstream config_file{argv[1]}   can't open → "cannot open config", exit 1
- ├─ Market market;                  constructor: locate_to_book = all NOT_TRADED
+ ├─ static Market market;           constructor: locate_to_book = all NOT_TRADED, orders zero-filled
  ├─ UDP_Receiver receiver{8080}     bind BEFORE the feed starts — UDP drops anything sent earlier
  ├─ try { load_config, run_startup }  any throw → "startup failed: <why>", exit 1
  ├─ load_config(market, config_file)
@@ -238,7 +239,7 @@ leftover = `[A | E]`. TSLA never got an R → reported.
 |---|---|---|
 | receive buffer | 64 KB alloc, **~1.4 KB hot** | holds one datagram; ~11 lines, permanently hot |
 | decode locals | **0** | SROA keeps the `Fields` structs in registers |
-| **order map** (one, shared) | **1 MB** | the only random-access structure → **the only real miss source** |
+| **order map** (one, shared) | **64 MB** (2²² slots) | the only random-access structure → **the only real miss source** |
 | ladders (per book) | ~33 KB (`sizeof(Book)` = 34,048) | sequential near the touch, stays hot |
 | bitmaps (per book) | 1 KB | scanned only when the best level empties |
 | the code | tens of KB | competes for L1i, and with data in the unified L2 |

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -44,6 +45,8 @@ int failures = 0;
 
 using mm::app::Market;
 
+// Market holds the 64 MB order map: too big for a test's stack, so each test builds it on the heap.
+
 constexpr std::array<char, 8> AAPL{'A', 'A', 'P', 'L', ' ', ' ', ' ', ' '};
 constexpr std::array<char, 8> MSFT{'M', 'S', 'F', 'T', ' ', ' ', ' ', ' '};
 constexpr std::array<char, 8> TSLA{'T', 'S', 'L', 'A', ' ', ' ', ' ', ' '};
@@ -67,8 +70,9 @@ void load_three_symbols(Market& market)
 
 bool config_throws(const std::string& text)
 {
-    Market             market;
-    std::istringstream in{text};
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
+    std::istringstream      in{text};
     try
     {
         mm::app::load_config(market, in);
@@ -82,8 +86,9 @@ bool config_throws(const std::string& text)
 
 std::uint32_t price_of(const std::string& price_text)
 {
-    Market             market;
-    std::istringstream in{"AAPL," + price_text + "\n"};
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
+    std::istringstream      in{"AAPL," + price_text + "\n"};
     mm::app::load_config(market, in);
     return market.config.at(AAPL).prev_close;
 }
@@ -95,8 +100,9 @@ bool price_rejected(const std::string& price_text)
 
 std::string config_error_message(const std::string& text)
 {
-    Market             market;
-    std::istringstream in{text};
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
+    std::istringstream      in{text};
     try
     {
         mm::app::load_config(market, in);
@@ -155,8 +161,9 @@ void test_config_prices()
 // ---------------------------------------------------------------------------
 void test_load_config()
 {
-    Market             market;
-    std::istringstream in{"# ticker,prev_close\n\nAAPL,175.23\nMSFT,410.15\nNVDALONG,1\n"};
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
+    std::istringstream      in{"# ticker,prev_close\n\nAAPL,175.23\nMSFT,410.15\nNVDALONG,1\n"};
     mm::app::load_config(market, in);
 
     CHECK_EQ(market.config.size(), 3u);
@@ -195,7 +202,8 @@ void test_load_config_rejects_bad_lines()
 // ---------------------------------------------------------------------------
 void test_new_market()
 {
-    Market market;
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
     CHECK_EQ(market.books.size(), 0u);
     CHECK_EQ(market.locate_to_book[0], Market::NOT_TRADED);
     CHECK_EQ(market.locate_to_book[65535], Market::NOT_TRADED);
@@ -204,7 +212,8 @@ void test_new_market()
 
 void test_full_startup_sequence()
 {
-    Market market;
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
     load_three_symbols(market);
     const auto* books = market.books.data();
 
@@ -252,7 +261,8 @@ void test_full_startup_sequence()
 
 void test_non_r_packet_after_r_is_all_leftover()
 {
-    Market market;
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
     load_three_symbols(market);
 
     std::byte r_only[39]{};
@@ -271,7 +281,8 @@ void test_duplicate_r_message_throws()
 {
     // same locate for two tickers
     {
-        Market market;
+        std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+        Market&                 market       = *market_owner;
         load_three_symbols(market);
         std::byte packet[39 + 39]{};
         put_r_message(packet, 14, "AAPL    ");
@@ -280,7 +291,8 @@ void test_duplicate_r_message_throws()
     }
     // same ticker on two locates
     {
-        Market market;
+        std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+        Market&                 market       = *market_owner;
         load_three_symbols(market);
         std::byte packet[39 + 39]{};
         put_r_message(packet, 14, "AAPL    ");
@@ -289,7 +301,8 @@ void test_duplicate_r_message_throws()
     }
     // a ticker outside the config is skipped, never a duplicate
     {
-        Market market;
+        std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+        Market&                 market       = *market_owner;
         load_three_symbols(market);
         std::byte packet[39 + 39]{};
         put_r_message(packet, 7, "ZZZZ    ");
@@ -300,7 +313,8 @@ void test_duplicate_r_message_throws()
 
 void test_truncated_r_is_dropped_and_startup_continues()
 {
-    Market market;
+    std::unique_ptr<Market> market_owner = std::make_unique<Market>();
+    Market&                 market       = *market_owner;
     load_three_symbols(market);
 
     std::byte packet[39 + 20]{};
