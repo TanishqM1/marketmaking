@@ -6,6 +6,16 @@ int main()
     // instantiate receiver socket
     mm::transport::UDP_Receiver receiver{8080};
     bool                        m_running = true;
+    // while loop to parse R messages
+    while (true)
+    {
+        auto packet = receiver.receive();
+        if (packet.empty())
+        {
+            continue;
+        }
+        // decode, if not R message, then change the address of first_packet.
+    }
     // poll receieve
     while (m_running)
     {

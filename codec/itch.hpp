@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types/types.hpp"
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,22 @@ enum class MsgType : char
     OrderCancel            = 'X',
     OrderDelete            = 'D',
     OrderReplace           = 'U',
+    RMessage               = 'R',
+};
+
+// (R) R Message
+
+struct RMessage
+{
+    static constexpr std::size_t stock_locate = 1;
+    static constexpr std::size_t stock_ticker = 11; // 8 bytes
+    static constexpr std::size_t length       = 39;
+};
+
+struct RMessageFields
+{
+    std::uint16_t       stock_locate = 1;
+    std::array<char, 8> stock_ticker;
 };
 
 // (A) Add Order
@@ -188,6 +205,7 @@ OrderExecutedFields decode_executed_order(const std::byte* packet);
 OrderCancelFields   decode_cancel_order(const std::byte* packet);
 OrderDeleteFields   decode_delete_order(const std::byte* packet);
 OrderReplaceFields  decode_replace_order(const std::byte* packet);
+RMessageFields      decode_r_message(const std::byte* packet);
 } // namespace detail
 
 // TODO: DELETE these three. They are redundant -- the inline definitions at the top of
