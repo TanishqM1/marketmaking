@@ -23,11 +23,7 @@ struct SymbolConfig
 // the market consists of locates, when a locate has NO book, it defualts to the 'NOT_TRADED' value.
 struct Market
 {
-    // default value for "no book" and LOCATES is max # of locate values.
-    static constexpr std::uint16_t NOT_TRADED = 0xFFFF;
-    static constexpr std::size_t   LOCATES    = 65536;
-
-    Market() { locate_to_book.fill(NOT_TRADED); }
+    Market() { locate_to_book.fill(state::NOT_TRADED); }
 
     // Ticker : {prev_close, book}
     std::map<std::array<char, 8>, SymbolConfig> config;
@@ -36,7 +32,7 @@ struct Market
     state::OrderMap          orders;
     // this instantiates an array where each element is a 2byte integer. The array holds "LOCATES"
     // elements.
-    std::array<std::uint16_t, LOCATES> locate_to_book;
+    std::array<std::uint16_t, state::LOCATES> locate_to_book;
     std::span<const std::byte>
         leftover; // the leftover messages from teh datagram with the lat of the RMessages. The rest
                   // of the datagram contains real market trades.

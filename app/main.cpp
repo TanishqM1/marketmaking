@@ -45,7 +45,8 @@ int main(int argc, char** argv)
     }
     // only for error logging for now, realistically we would NOT need this since
     // we get data from multicast sources
-    if (!mm::itch::decode_packet(market.leftover))
+    if (!mm::itch::decode_packet(market.leftover, market.books, market.locate_to_book,
+                                 market.orders))
     {
         std::cerr << "decode failed: bad packet (" << market.leftover.size() << " bytes)\n";
         return 1;
@@ -62,7 +63,8 @@ int main(int argc, char** argv)
         }
         // send to decode_packet
         // same as above
-        if (!mm::itch::decode_packet(packet)) [[unlikely]]
+        if (!mm::itch::decode_packet(packet, market.books, market.locate_to_book,
+                                     market.orders)) [[unlikely]]
         {
             std::cerr << "decode failed: bad packet (" << packet.size() << " bytes)\n";
             return 1;

@@ -10,12 +10,12 @@ over SBE/TCP.
 types/      shared value types (Side, ...); depends on nothing, so every layer can include it.
 transport/  UDP socket that receives raw datagrams; knows nothing about what the bytes mean.
 session/    MoldUDP64 sequence numbers and gap detection, so dropped packets are noticed. (not started)
-codec/      ITCH decoding: bytes -> typed messages, bounds-checked, no I/O.
+codec/      ITCH decoding: bytes -> typed messages, bounds-checked, no I/O; applies each to its book.
 state/      the order book: an order-ref hash map plus tick-indexed bid/ask ladders and best bid/ask.
 strategy/   fair value and quoting logic that decides what to bid and offer. (not started)
 risk/       pre-trade checks that every outgoing order must pass. (not started)
 app/        main and the event loop: wires transport -> codec -> book together.
-exchange/   the mock exchange, a separate binary that shares codec/ but not the book. (not started)
+exchange/   the mock exchange, a separate binary that shares no code with the trading system. (not started)
 tools/      replay, book dumper and latency histograms. (not started)
 test/       one test binary per layer, mirroring the source tree.
 z_notes/    topic-organized learning notes and changelog; z_questions/ holds open questions.
@@ -59,7 +59,7 @@ flowchart LR
         direction LR
         transport["transport/<br/>UDP receiver"] --> session["session/<br/>MoldUDP64, gaps"]
         session --> codec["codec/<br/>ITCH decode"]
-        codec -. "not wired yet" .-> book
+        codec -- "add, execute, cancel,<br/>delete, replace" --> book
 
         subgraph state["state/"]
             book["Book<br/>bid/ask ladders<br/>best bid/ask"] --- omap["OrderMap<br/>ref → order"]

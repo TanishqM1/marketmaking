@@ -169,11 +169,12 @@ types/      shared value types and message structs — depends on NOTHING
 transport/  sockets and bytes. No idea what the bytes mean.
 session/    sequence numbers, gap detection, heartbeats, logon.
 codec/      SBE schema + encode/decode. Bytes <-> typed messages. No I/O.
+            ITCH decode applies each message straight to the state/ books.
 state/      order book, order-ref map, position, open orders, PnL.
 strategy/   fair value, quoting, inventory skew.
 risk/       pre-trade checks.
 app/        main: wiring and the event loop. Depends on everything.
-exchange/   the mock exchange — separate binary, reuses types/ and codec/.
+exchange/   the mock exchange — separate binary and separate entity. Shares no code.
 tools/      replay, book dumper, latency histograms.
 test/
 ```
@@ -183,9 +184,13 @@ Rules that hold this together:
 - `types/` must compile with every other folder deleted.
 - `strategy/` never imports `codec/`. Wire-format types may travel as far as the book builder
   and no further.
-- The mock exchange shares `codec/` with the trading system (guarantees they agree on the wire)
-  but **not** the book — a market-data book and a matching engine are different structures with
-  different invariants.
+- `codec/` may include `state/`: ITCH decode calls the books directly, with no handler layer in
+  between (decided 2026-11-17; measured the same speed as a handler). `state/` never includes
+  `codec/`.
+- The mock exchange shares **no code** with the trading system, not even `types/`. It keeps its
+  own copy of the wire format, written from the spec, the way a real exchange would: the spec is
+  the contract. A market-data book and a matching engine are different structures with
+  different invariants anyway.
 - Each layer testable with no network and no sockets.
 
 ## Language
