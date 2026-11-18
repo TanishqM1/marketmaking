@@ -43,7 +43,13 @@ int main(int argc, char** argv)
         std::cerr << "startup failed: " << e.what() << '\n';
         return 1;
     }
-    mm::itch::decode_packet(market.leftover);
+    // only for error logging for now, realistically we would NOT need this since
+    // we get data from multicast sources
+    if (!mm::itch::decode_packet(market.leftover))
+    {
+        std::cerr << "decode failed: bad packet (" << market.leftover.size() << " bytes)\n";
+        return 1;
+    }
 
     // poll receieve
     while (m_running)
@@ -55,6 +61,11 @@ int main(int argc, char** argv)
             continue;
         }
         // send to decode_packet
-        mm::itch::decode_packet(packet);
+        // same as above
+        if (!mm::itch::decode_packet(packet)) [[unlikely]]
+        {
+            std::cerr << "decode failed: bad packet (" << packet.size() << " bytes)\n";
+            return 1;
+        }
     }
 }

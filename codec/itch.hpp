@@ -195,7 +195,135 @@ struct OrderReplaceFields
     std::uint32_t price;
 };
 
-void decode_packet(std::span<const std::byte> packet);
+// skipped, not decoded
+// constexpr -> tells compiler to read at compile time!!!
+
+// (S) System Event
+struct SystemEvent
+{
+    static constexpr std::size_t length = 12;
+};
+
+// (H) Stock Trading Action
+struct StockTradingAction
+{
+    static constexpr std::size_t length = 25;
+};
+
+// (Y) Reg SHO Short Sale Price Test Restricted Indicator
+struct RegSHORestriction
+{
+    static constexpr std::size_t length = 20;
+};
+
+// (L) Market Participant Position
+struct MarketParticipantPosition
+{
+    static constexpr std::size_t length = 26;
+};
+
+// (V) MWCB Decline Level
+struct MWCBDeclineLevel
+{
+    static constexpr std::size_t length = 35;
+};
+
+// (W) MWCB Status
+struct MWCBStatus
+{
+    static constexpr std::size_t length = 12;
+};
+
+// (K) IPO Quoting Period Update
+struct IPOQuotingPeriod
+{
+    static constexpr std::size_t length = 28;
+};
+
+// (J) LULD Auction Collar
+struct LULDAuctionCollar
+{
+    static constexpr std::size_t length = 35;
+};
+
+// (h) Operational Halt
+struct OperationalHalt
+{
+    static constexpr std::size_t length = 21;
+};
+
+// (P) Trade (Non-Cross)
+struct Trade
+{
+    static constexpr std::size_t length = 44;
+};
+
+// (Q) Cross Trade
+struct CrossTrade
+{
+    static constexpr std::size_t length = 40;
+};
+
+// (B) Broken Trade
+struct BrokenTrade
+{
+    static constexpr std::size_t length = 19;
+};
+
+// (I) Net Order Imbalance Indicator (NOII)
+struct NetOrderImbalance
+{
+    static constexpr std::size_t length = 50;
+};
+
+// (N) Retail Price Improvement Indicator (RPII)
+struct RetailPriceImprovement
+{
+    static constexpr std::size_t length = 20;
+};
+
+// (O) Direct Listing with Capital Raise Price Discovery
+struct DirectListingCapitalRaise
+{
+    static constexpr std::size_t length = 48;
+};
+
+// message length by type byte. 0 = not an ITCH 5.0 type.
+
+// the reason this is faster than a normal map is because of cpp's under the hood treatment.
+// "MSG_LENGTH" makes an int8 array (256) of empty slots.
+// 'A' is '65', so it just indexes the right part in the array.
+
+inline constexpr std::array<std::uint8_t, 256> MSG_LENGTH = []
+{
+    std::array<std::uint8_t, 256> table{};
+    table['A'] = AddOrder::length;
+    table['F'] = AddOrderWithMPID::length;
+    table['E'] = OrderExecuted::length;
+    table['C'] = OrderExecutedWithPrice::length;
+    table['X'] = OrderCancel::length;
+    table['D'] = OrderDelete::length;
+    table['U'] = OrderReplace::length;
+    table['R'] = RMessage::length;
+    table['S'] = SystemEvent::length;
+    table['H'] = StockTradingAction::length;
+    table['Y'] = RegSHORestriction::length;
+    table['L'] = MarketParticipantPosition::length;
+    table['V'] = MWCBDeclineLevel::length;
+    table['W'] = MWCBStatus::length;
+    table['K'] = IPOQuotingPeriod::length;
+    table['J'] = LULDAuctionCollar::length;
+    table['h'] = OperationalHalt::length;
+    table['P'] = Trade::length;
+    table['Q'] = CrossTrade::length;
+    table['B'] = BrokenTrade::length;
+    table['I'] = NetOrderImbalance::length;
+    table['N'] = RetailPriceImprovement::length;
+    table['O'] = DirectListingCapitalRaise::length;
+    return table;
+}();
+
+[[nodiscard]] bool decode_packet(std::span<const std::byte> packet);
 
 // check if we are at a r message, decode it, initialize books and add to map, and then continue.
 // if its NOT a r map, then end the loop, and trading has begun!

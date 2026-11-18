@@ -74,6 +74,47 @@ static_assert(OrderExecuted::order_ref == OrderExecutedWithPrice::order_ref);
 static_assert(OrderExecuted::executed_shares == OrderExecutedWithPrice::executed_shares);
 
 static_assert(sizeof(Side) == 1); // we asked for : std::uint8_t
+
+// MSG_LENGTH against the Nasdaq TotalView-ITCH 5.0 spec (rev. Apr 28 2023), typed in by
+// hand, not taken from the structs, so a wrong constant can't hide behind itself.
+static_assert(MSG_LENGTH['A'] == 36);
+static_assert(MSG_LENGTH['F'] == 40);
+static_assert(MSG_LENGTH['E'] == 31);
+static_assert(MSG_LENGTH['C'] == 36);
+static_assert(MSG_LENGTH['X'] == 23);
+static_assert(MSG_LENGTH['D'] == 19);
+static_assert(MSG_LENGTH['U'] == 35);
+static_assert(MSG_LENGTH['R'] == 39);
+static_assert(MSG_LENGTH['S'] == 12);
+static_assert(MSG_LENGTH['H'] == 25);
+static_assert(MSG_LENGTH['Y'] == 20);
+static_assert(MSG_LENGTH['L'] == 26);
+static_assert(MSG_LENGTH['V'] == 35);
+static_assert(MSG_LENGTH['W'] == 12);
+static_assert(MSG_LENGTH['K'] == 28);
+static_assert(MSG_LENGTH['J'] == 35);
+static_assert(MSG_LENGTH['h'] == 21);
+static_assert(MSG_LENGTH['P'] == 44);
+static_assert(MSG_LENGTH['Q'] == 40);
+static_assert(MSG_LENGTH['B'] == 19);
+static_assert(MSG_LENGTH['I'] == 50);
+static_assert(MSG_LENGTH['N'] == 20);
+static_assert(MSG_LENGTH['O'] == 48);
+
+// exactly those 23 types are known; every other byte is 0
+constexpr std::size_t known_types()
+{
+    std::size_t n = 0;
+    for (std::uint8_t length : MSG_LENGTH)
+    {
+        n += length != 0;
+    }
+    return n;
+}
+static_assert(known_types() == 23);
+static_assert(MSG_LENGTH['Z'] == 0);
+static_assert(MSG_LENGTH[0] == 0);
+static_assert(MSG_LENGTH[0xC1] == 0);
 } // namespace mm::itch
 
 // ---------------------------------------------------------------------------
@@ -252,6 +293,89 @@ void test_next_r_message_truncated_r_drops_the_tail()
     CHECK_EQ(offset, packet.size());
 }
 
+// decode_packet's only output so far (routing is #5) is ok / bad packet.
+// before MSG_LENGTH, every one of these spun forever in default. ctest's TIMEOUT turns a
+// hang into a failure.
+
+// [A | S | P | D] = 36 + 12 + 44 + 19: skipped types sit between decoded ones
+void test_decode_packet_skips_known_types()
+{
+    std::byte datagram[36 + 12 + 44 + 19]{};
+    datagram[0]            = std::byte{'A'};
+    datagram[36]           = std::byte{'S'};
+    datagram[36 + 12]      = std::byte{'P'};
+    datagram[36 + 12 + 44] = std::byte{'D'};
+    CHECK(mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// an empty packet has nothing wrong with it
+void test_decode_packet_empty_is_ok()
+{
+    CHECK(mm::itch::decode_packet(std::span<const std::byte>{}));
+}
+
+// one of every skipped type, back to back
+void test_decode_packet_skips_every_skipped_type()
+{
+    constexpr char types[] = {'S', 'R', 'H', 'Y', 'L', 'V', 'W', 'K',
+                              'J', 'h', 'P', 'Q', 'B', 'I', 'N', 'O'};
+    std::byte      datagram[12 + 39 + 25 + 20 + 26 + 35 + 12 + 28 + 35 + 21 + 44 + 40 + 19 + 50 +
+                            20 + 48]{};
+    std::size_t    at = 0;
+    for (char type : types)
+    {
+        datagram[at] = static_cast<std::byte>(type);
+        at += mm::itch::MSG_LENGTH[static_cast<std::uint8_t>(type)];
+    }
+    CHECK_EQ(at, sizeof(datagram));
+    CHECK(mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// [A | Z...]: 'Z' is not ITCH, so the rest of the packet is dropped
+void test_decode_packet_unknown_type_fails()
+{
+    std::byte datagram[36 + 40]{};
+    datagram[0]  = std::byte{'A'};
+    datagram[36] = std::byte{'Z'};
+    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// 0xC1 is negative as a signed char. indexing MSG_LENGTH with it unconverted reads before
+// the array. only caught with libc++ hardening (_LIBCPP_HARDENING_MODE) or ASan on; without
+// them a missing cast can still pass.
+void test_decode_packet_high_byte_type_fails()
+{
+    std::byte datagram[40]{};
+    datagram[0] = std::byte{0xC1};
+    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// [A | P cut to 20 bytes]: the skip runs past the end
+void test_decode_packet_truncated_skip_fails()
+{
+    std::byte datagram[36 + 20]{};
+    datagram[0]  = std::byte{'A'};
+    datagram[36] = std::byte{'P'};
+    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// [A cut to 20 bytes]: a decoded type that doesn't fit
+void test_decode_packet_truncated_add_fails()
+{
+    std::byte datagram[20]{};
+    datagram[0] = std::byte{'A'};
+    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
+// [A | 5 bytes]: a tail too short to hold a header
+void test_decode_packet_short_tail_fails()
+{
+    std::byte datagram[36 + 5]{};
+    datagram[0]  = std::byte{'A'};
+    datagram[36] = std::byte{'D'};
+    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+}
+
 } // namespace
 
 int main()
@@ -262,6 +386,14 @@ int main()
     test_decode_r_message();
     test_next_r_message_stops_at_first_non_r();
     test_next_r_message_truncated_r_drops_the_tail();
+    test_decode_packet_skips_known_types();
+    test_decode_packet_empty_is_ok();
+    test_decode_packet_skips_every_skipped_type();
+    test_decode_packet_unknown_type_fails();
+    test_decode_packet_high_byte_type_fails();
+    test_decode_packet_truncated_skip_fails();
+    test_decode_packet_truncated_add_fails();
+    test_decode_packet_short_tail_fails();
 
     // TODO: the same for (E), (X), (U). (U) matters most -- two adjacent uint64 order
     // refs at offsets 11 and 19, so a transposition is silent and would corrupt the map.

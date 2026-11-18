@@ -134,7 +134,7 @@ bool next_r_message(std::span<const std::byte> packet, std::size_t& offset,
 // 3   tracking num    2 byte integer
 // 5   timestamp       6 byte nanoseconds since midnight.
 
-void decode_packet(std::span<const std::byte> packet)
+bool decode_packet(std::span<const std::byte> packet)
 {
 
     // general flow:
@@ -161,7 +161,7 @@ void decode_packet(std::span<const std::byte> packet)
     {
         if (packet.size() - offset < MessageHeader::size)
         {
-            return;
+            return false;
         }
         // PARSE HEADER
 
@@ -187,7 +187,7 @@ void decode_packet(std::span<const std::byte> packet)
                 // the subtraction is safe: the loop condition guarantees offset < size.
                 if (AddOrder::length > packet.size() - offset)
                 {
-                    return; // truncated message. TODO: count it, cold path
+                    return false; // truncated message. TODO: count it, cold path
                 }
 
                 AddOrderFields addorderfields = detail::decode_add_order(packet.data() + offset);
@@ -202,7 +202,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (AddOrderWithMPID::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 // (F) is (A) + a 4-byte MPID appended, so all of AddOrder's offsets apply.
                 // ONLY the length differs -- 40 vs 36. this IS an add: skipping it would
@@ -218,7 +218,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (OrderExecuted::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 OrderExecutedFields executed_order =
                     detail::decode_executed_order(packet.data() + offset);
@@ -232,7 +232,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (OrderExecutedWithPrice::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 // same decoder as (E): order_ref and executed_shares sit at the same offsets,
                 // and printable / execution_price are tape concerns we don't read.
@@ -249,7 +249,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (OrderCancel::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 OrderCancelFields cancel_order =
                     detail::decode_cancel_order(packet.data() + offset);
@@ -263,7 +263,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (OrderDelete::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 OrderDeleteFields delete_order =
                     detail::decode_delete_order(packet.data() + offset);
@@ -277,7 +277,7 @@ void decode_packet(std::span<const std::byte> packet)
                 if (OrderReplace::length > packet.size() - offset)
                 {
                     // TODO: error handle
-                    return;
+                    return false;
                 }
                 OrderReplaceFields replace_order =
                     detail::decode_replace_order(packet.data() + offset);
@@ -287,13 +287,21 @@ void decode_packet(std::span<const std::byte> packet)
                 offset += OrderReplace::length;
                 break;
             }
-            // TODO: unknown type never advances offset -> infinite loop. skip it by a per-type
-            // length table.
+            // ASSUMPTION: every type on the wire is an ITCH 5.0 type. the ones we don't decode
+            // are skipped by their length. a length of 0 is a type we do NOT support: we can't
+            // know where it ends, so we drop the rest of the packet.
             [[unlikely]] default:
             {
+                std::uint8_t length = MSG_LENGTH[static_cast<std::uint8_t>(type)];
+                if (length == 0 || length > packet.size() - offset)
+                {
+                    return false;
+                }
+                offset += length;
                 break;
             }
         }
     }
+    return true;
 }
 }; // namespace mm::itch
