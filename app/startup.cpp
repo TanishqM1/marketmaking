@@ -61,8 +61,8 @@ void bind_r_message(Market& market, const itch::RMessageFields& r_message)
     }
     // book already exists
     // already taken pt.2
-    if ((*symbol).second.book != Market::NOT_TRADED ||
-        market.locate_to_book[r_message.stock_locate] != Market::NOT_TRADED)
+    if ((*symbol).second.book != state::NOT_TRADED ||
+        market.locate_to_book[r_message.stock_locate] != state::NOT_TRADED)
     {
         std::string ticker{r_message.stock_ticker.data(), r_message.stock_ticker.size()};
         throw std::runtime_error("duplicate R message: " + ticker + " locate " +
@@ -80,7 +80,7 @@ void report_missing_tickers(const Market& market)
 {
     for (const auto& entry : market.config)
     {
-        if (entry.second.book == Market::NOT_TRADED)
+        if (entry.second.book == state::NOT_TRADED)
         {
             std::string_view ticker{entry.first.data(), entry.first.size()};
             std::cerr << "startup: no R message for " << ticker << '\n';
@@ -151,10 +151,10 @@ void load_config(Market& market, std::istream& in)
 
         std::uint32_t prev_close =
             static_cast<std::uint32_t>(dollars * ITCH_UNITS_PER_DOLLAR + decimals);
-        market.config[ticker] = SymbolConfig{prev_close, Market::NOT_TRADED};
+        market.config[ticker] = SymbolConfig{prev_close, state::NOT_TRADED};
     }
 
-    if (market.config.size() >= Market::NOT_TRADED)
+    if (market.config.size() >= state::NOT_TRADED)
     {
         throw std::runtime_error("config has more symbols than locate_to_book can index");
     }

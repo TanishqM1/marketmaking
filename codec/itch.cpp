@@ -134,7 +134,9 @@ bool next_r_message(std::span<const std::byte> packet, std::size_t& offset,
 // 3   tracking num    2 byte integer
 // 5   timestamp       6 byte nanoseconds since midnight.
 
-bool decode_packet(std::span<const std::byte> packet)
+bool decode_packet(std::span<const std::byte> packet, std::span<state::Book> books,
+                   const std::array<std::uint16_t, state::LOCATES>& locate_to_book,
+                   state::OrderMap& orders)
 {
 
     // general flow:
@@ -169,11 +171,6 @@ bool decode_packet(std::span<const std::byte> packet)
 
         // read message type (dont need memcpy, can directly read!)
         auto type = static_cast<itch::MsgType>(packet.data()[offset + MessageHeader::msg_type]);
-        // TODO: stock_locate is decoded and then DISCARDED. It is the only symbol id in
-        // the message, so until it reaches the book every symbol collapses into one book
-        // (AAPL and MSFT adds applied to the same state). The locate -> book index
-        // dispatch is a per-message lookup, so design it for cache locality before
-        // state/ exists.
         std::uint16_t stock_locate = read_be16(packet.data(), offset + MessageHeader::stock_locate);
         // we can disregard tracking num & timestamp, it doesnt matter.
         // jump table with case : type, then parse the rest of the type.
@@ -191,7 +188,12 @@ bool decode_packet(std::span<const std::byte> packet)
                 }
 
                 AddOrderFields addorderfields = detail::decode_add_order(packet.data() + offset);
-                // logic to submit into market making book
+                std::uint16_t  book           = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].add(orders, addorderfields.order_ref, addorderfields.side,
+                                    addorderfields.price, addorderfields.shares);
+                }
 
                 offset += AddOrder::length; // advance to the next message
                 break;
@@ -208,7 +210,12 @@ bool decode_packet(std::span<const std::byte> packet)
                 // ONLY the length differs -- 40 vs 36. this IS an add: skipping it would
                 // silently lose orders, and every later E/X/D for those refs would miss.
                 AddOrderFields addorderfields = detail::decode_add_order(packet.data() + offset);
-                // logic to submit into market making book
+                std::uint16_t  book           = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].add(orders, addorderfields.order_ref, addorderfields.side,
+                                    addorderfields.price, addorderfields.shares);
+                }
 
                 offset += AddOrderWithMPID::length;
                 break;
@@ -222,7 +229,12 @@ bool decode_packet(std::span<const std::byte> packet)
                 }
                 OrderExecutedFields executed_order =
                     detail::decode_executed_order(packet.data() + offset);
-                // TODO: market making book
+                std::uint16_t book = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].execute(orders, executed_order.order_ref,
+                                        executed_order.executed_shares);
+                }
                 offset += OrderExecuted::length;
                 break;
             }
@@ -239,7 +251,12 @@ bool decode_packet(std::span<const std::byte> packet)
                 // ONLY the length differs -- 36 vs 31. reuse the decoder, never the length.
                 OrderExecutedFields executed_order =
                     detail::decode_executed_order(packet.data() + offset);
-                // TODO: market making book
+                std::uint16_t book = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].execute(orders, executed_order.order_ref,
+                                        executed_order.executed_shares);
+                }
                 offset += OrderExecutedWithPrice::length;
                 break;
             }
@@ -253,7 +270,12 @@ bool decode_packet(std::span<const std::byte> packet)
                 }
                 OrderCancelFields cancel_order =
                     detail::decode_cancel_order(packet.data() + offset);
-                // TODO: market making book
+                std::uint16_t book = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].cancel(orders, cancel_order.order_ref,
+                                       cancel_order.cancelled_shares);
+                }
                 offset += OrderCancel::length;
                 break;
             }
@@ -267,7 +289,11 @@ bool decode_packet(std::span<const std::byte> packet)
                 }
                 OrderDeleteFields delete_order =
                     detail::decode_delete_order(packet.data() + offset);
-                // TODO: market making book -- remove ref.remaining from its level, erase ref
+                std::uint16_t book = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].remove(orders, delete_order.order_ref);
+                }
                 offset += OrderDelete::length;
                 break;
             }
@@ -281,9 +307,16 @@ bool decode_packet(std::span<const std::byte> packet)
                 }
                 OrderReplaceFields replace_order =
                     detail::decode_replace_order(packet.data() + offset);
-                // TODO: market making book -- this is a DELETE + ADD, not a modify.
+                // this is a DELETE + ADD, not a modify.
                 // remove original_order_ref's full remaining from its old level, erase it,
                 // then insert new_order_ref at the new price. all later messages use the new ref.
+                std::uint16_t book = locate_to_book[stock_locate];
+                if (book != state::NOT_TRADED)
+                {
+                    books[book].replace(orders, replace_order.original_order_ref,
+                                        replace_order.new_order_ref, replace_order.price,
+                                        replace_order.shares);
+                }
                 offset += OrderReplace::length;
                 break;
             }

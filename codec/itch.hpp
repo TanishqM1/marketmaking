@@ -1,5 +1,6 @@
 #pragma once
 
+#include "state/book.hpp"
 #include "types/types.hpp"
 #include <array>
 #include <bit>
@@ -323,7 +324,9 @@ inline constexpr std::array<std::uint8_t, 256> MSG_LENGTH = []
     return table;
 }();
 
-[[nodiscard]] bool decode_packet(std::span<const std::byte> packet);
+[[nodiscard]] bool decode_packet(std::span<const std::byte> packet, std::span<state::Book> books,
+                                 const std::array<std::uint16_t, state::LOCATES>& locate_to_book,
+                                 state::OrderMap& orders);
 
 // check if we are at a r message, decode it, initialize books and add to map, and then continue.
 // if its NOT a r map, then end the loop, and trading has begun!

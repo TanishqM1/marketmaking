@@ -13,6 +13,10 @@
 
 namespace mm::state
 {
+// default value for "no book" and LOCATES is max # of locate values.
+inline constexpr std::uint16_t NOT_TRADED = 0xFFFF;
+inline constexpr std::size_t   LOCATES    = 65536;
+
 struct TickLevel
 {
     std::uint32_t tick;

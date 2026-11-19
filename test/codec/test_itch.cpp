@@ -12,7 +12,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <span>
+#include <vector>
 
 #include "codec/itch.hpp"
 
@@ -293,7 +295,30 @@ void test_next_r_message_truncated_r_drops_the_tail()
     CHECK_EQ(offset, packet.size());
 }
 
-// decode_packet's only output so far (routing is #5) is ok / bad packet.
+// what decode_packet writes into: the books, the locate table, the shared order map.
+// the map is 64 MB, so it lives on the heap. nothing is bound until bind() is called, so the
+// framing tests below (locate 0 everywhere) touch no book.
+struct Books
+{
+    std::vector<mm::state::Book>                  books;
+    std::array<std::uint16_t, mm::state::LOCATES> locate_to_book;
+    std::unique_ptr<mm::state::OrderMap> orders = std::make_unique<mm::state::OrderMap>();
+
+    Books() { locate_to_book.fill(mm::state::NOT_TRADED); }
+
+    void bind(std::uint16_t locate, std::uint32_t prev_close)
+    {
+        locate_to_book[locate] = static_cast<std::uint16_t>(books.size());
+        books.emplace_back(prev_close);
+    }
+
+    bool decode(std::span<const std::byte> packet)
+    {
+        return mm::itch::decode_packet(packet, books, locate_to_book, *orders);
+    }
+};
+
+// framing: ok / bad packet.
 // before MSG_LENGTH, every one of these spun forever in default. ctest's TIMEOUT turns a
 // hang into a failure.
 
@@ -305,13 +330,13 @@ void test_decode_packet_skips_known_types()
     datagram[36]           = std::byte{'S'};
     datagram[36 + 12]      = std::byte{'P'};
     datagram[36 + 12 + 44] = std::byte{'D'};
-    CHECK(mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(Books{}.decode(datagram));
 }
 
 // an empty packet has nothing wrong with it
 void test_decode_packet_empty_is_ok()
 {
-    CHECK(mm::itch::decode_packet(std::span<const std::byte>{}));
+    CHECK(Books{}.decode({}));
 }
 
 // one of every skipped type, back to back
@@ -328,7 +353,7 @@ void test_decode_packet_skips_every_skipped_type()
         at += mm::itch::MSG_LENGTH[static_cast<std::uint8_t>(type)];
     }
     CHECK_EQ(at, sizeof(datagram));
-    CHECK(mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(Books{}.decode(datagram));
 }
 
 // [A | Z...]: 'Z' is not ITCH, so the rest of the packet is dropped
@@ -337,7 +362,7 @@ void test_decode_packet_unknown_type_fails()
     std::byte datagram[36 + 40]{};
     datagram[0]  = std::byte{'A'};
     datagram[36] = std::byte{'Z'};
-    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(!Books{}.decode(datagram));
 }
 
 // 0xC1 is negative as a signed char. indexing MSG_LENGTH with it unconverted reads before
@@ -347,7 +372,7 @@ void test_decode_packet_high_byte_type_fails()
 {
     std::byte datagram[40]{};
     datagram[0] = std::byte{0xC1};
-    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(!Books{}.decode(datagram));
 }
 
 // [A | P cut to 20 bytes]: the skip runs past the end
@@ -356,7 +381,7 @@ void test_decode_packet_truncated_skip_fails()
     std::byte datagram[36 + 20]{};
     datagram[0]  = std::byte{'A'};
     datagram[36] = std::byte{'P'};
-    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(!Books{}.decode(datagram));
 }
 
 // [A cut to 20 bytes]: a decoded type that doesn't fit
@@ -364,7 +389,7 @@ void test_decode_packet_truncated_add_fails()
 {
     std::byte datagram[20]{};
     datagram[0] = std::byte{'A'};
-    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(!Books{}.decode(datagram));
 }
 
 // [A | 5 bytes]: a tail too short to hold a header
@@ -373,7 +398,180 @@ void test_decode_packet_short_tail_fails()
     std::byte datagram[36 + 5]{};
     datagram[0]  = std::byte{'A'};
     datagram[36] = std::byte{'D'};
-    CHECK(!mm::itch::decode_packet(std::span<const std::byte>{datagram}));
+    CHECK(!Books{}.decode(datagram));
+}
+
+// ---------------------------------------------------------------------------
+// Routing: decoded messages land in the right book. Offsets typed in by hand from the
+// spec (11 = ref, 19 = side/shares, ...), not taken from the structs.
+// ---------------------------------------------------------------------------
+
+void put_be(std::vector<std::byte>& p, std::size_t at, std::uint64_t value, std::size_t bytes)
+{
+    for (std::size_t i = 0; i < bytes; ++i)
+    {
+        p[at + i] = static_cast<std::byte>(value >> (8 * (bytes - 1 - i)));
+    }
+}
+
+// appends one zeroed message of `length` bytes with its type and locate filled in
+std::size_t start(std::vector<std::byte>& p, char type, std::size_t length, std::uint16_t locate)
+{
+    std::size_t at = p.size();
+    p.resize(at + length);
+    p[at] = static_cast<std::byte>(type);
+    put_be(p, at + 1, locate, 2);
+    return at;
+}
+
+// (A) 36 / (F) 40: ref 11, side 19, shares 20, price 32
+void put_add(std::vector<std::byte>& p, char type, std::uint16_t locate, std::uint64_t ref,
+             char side, std::uint32_t shares, std::uint32_t price)
+{
+    std::size_t at = start(p, type, type == 'F' ? 40 : 36, locate);
+    put_be(p, at + 11, ref, 8);
+    p[at + 19] = static_cast<std::byte>(side);
+    put_be(p, at + 20, shares, 4);
+    put_be(p, at + 32, price, 4);
+}
+
+// (E) 31 / (C) 36 / (X) 23: ref 11, shares 19
+void put_reduce(std::vector<std::byte>& p, char type, std::uint16_t locate, std::uint64_t ref,
+                std::uint32_t shares)
+{
+    std::size_t length = type == 'E' ? 31 : type == 'C' ? 36 : 23;
+    std::size_t at     = start(p, type, length, locate);
+    put_be(p, at + 11, ref, 8);
+    put_be(p, at + 19, shares, 4);
+}
+
+// (D) 19: ref 11
+void put_delete(std::vector<std::byte>& p, std::uint16_t locate, std::uint64_t ref)
+{
+    std::size_t at = start(p, 'D', 19, locate);
+    put_be(p, at + 11, ref, 8);
+}
+
+// (U) 35: original ref 11, new ref 19, shares 27, price 31
+void put_replace(std::vector<std::byte>& p, std::uint16_t locate, std::uint64_t original_ref,
+                 std::uint64_t new_ref, std::uint32_t shares, std::uint32_t price)
+{
+    std::size_t at = start(p, 'U', 35, locate);
+    put_be(p, at + 11, original_ref, 8);
+    put_be(p, at + 19, new_ref, 8);
+    put_be(p, at + 27, shares, 4);
+    put_be(p, at + 31, price, 4);
+}
+
+constexpr std::uint16_t AAPL_LOCATE = 13;
+constexpr std::uint32_t AAPL_CLOSE  = 1752300; // $175.23
+constexpr std::uint16_t MSFT_LOCATE = 22;
+constexpr std::uint32_t MSFT_CLOSE  = 4000000; // $400.00
+
+// A Buy 100 @ $175.10 -> tick 17510 x 100. a price/shares swap would give tick 1 x 1751000.
+void test_route_add_sets_best_bid()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'A', AAPL_LOCATE, 5, 'B', 100, 1751000);
+
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().tick, 17510u);
+    CHECK_EQ(b.books[0].best_bid().qty, 100u);
+    CHECK_EQ(b.books[0].best_ask().qty, 0u);
+    CHECK((*b.orders).find(5) != nullptr);
+}
+
+// F is an add too, here on the sell side
+void test_route_add_with_mpid_sets_best_ask()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'F', AAPL_LOCATE, 7, 'S', 300, 1752000);
+
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_ask().tick, 17520u);
+    CHECK_EQ(b.books[0].best_ask().qty, 300u);
+}
+
+// [A 100 | E 40 | C 10 | X 20 | D] in one packet: 100 -> 60 -> 50 -> 30 -> gone
+void test_route_reduces_then_deletes()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'A', AAPL_LOCATE, 5, 'B', 100, 1751000);
+    put_reduce(p, 'E', AAPL_LOCATE, 5, 40);
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().qty, 60u);
+
+    p.clear();
+    put_reduce(p, 'C', AAPL_LOCATE, 5, 10);
+    put_reduce(p, 'X', AAPL_LOCATE, 5, 20);
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().qty, 30u);
+
+    p.clear();
+    put_delete(p, AAPL_LOCATE, 5);
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().qty, 0u);
+    CHECK((*b.orders).find(5) == nullptr);
+}
+
+// U 5 -> 6 at $175.05 x 200: old level empties, new ref lives at the new price.
+// a swap of the two refs (offsets 11 and 19) would leave ref 5 alive.
+void test_route_replace_moves_the_order()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'A', AAPL_LOCATE, 5, 'B', 100, 1751000);
+    put_replace(p, AAPL_LOCATE, 5, 6, 200, 1750500);
+
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().tick, 17505u);
+    CHECK_EQ(b.books[0].best_bid().qty, 200u);
+    CHECK((*b.orders).find(5) == nullptr);
+    CHECK((*b.orders).find(6) != nullptr);
+
+    p.clear();
+    put_delete(p, AAPL_LOCATE, 6);
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().qty, 0u);
+}
+
+// locate 99 was never bound: the add is skipped, nothing reaches the map
+void test_route_untraded_locate_is_ignored()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'A', 99, 9, 'B', 100, 1751000);
+
+    CHECK(b.decode(p));
+    CHECK_EQ((*b.orders).size(), 0u);
+    CHECK_EQ(b.books[0].best_bid().qty, 0u);
+}
+
+// AAPL on locate 13 -> book 0, MSFT on locate 22 -> book 1. each add lands in its own book,
+// and an execute finds its order through the shared map.
+void test_route_two_books_stay_separate()
+{
+    Books b;
+    b.bind(AAPL_LOCATE, AAPL_CLOSE);
+    b.bind(MSFT_LOCATE, MSFT_CLOSE);
+    std::vector<std::byte> p;
+    put_add(p, 'A', AAPL_LOCATE, 5, 'B', 100, 1751000);
+    put_add(p, 'A', MSFT_LOCATE, 8, 'B', 50, 3999000);
+    put_reduce(p, 'E', MSFT_LOCATE, 8, 20);
+
+    CHECK(b.decode(p));
+    CHECK_EQ(b.books[0].best_bid().tick, 17510u);
+    CHECK_EQ(b.books[0].best_bid().qty, 100u);
+    CHECK_EQ(b.books[1].best_bid().tick, 39990u);
+    CHECK_EQ(b.books[1].best_bid().qty, 30u);
 }
 
 } // namespace
@@ -394,6 +592,12 @@ int main()
     test_decode_packet_truncated_skip_fails();
     test_decode_packet_truncated_add_fails();
     test_decode_packet_short_tail_fails();
+    test_route_add_sets_best_bid();
+    test_route_add_with_mpid_sets_best_ask();
+    test_route_reduces_then_deletes();
+    test_route_replace_moves_the_order();
+    test_route_untraded_locate_is_ignored();
+    test_route_two_books_stay_separate();
 
     // TODO: the same for (E), (X), (U). (U) matters most -- two adjacent uint64 order
     // refs at offsets 11 and 19, so a transposition is silent and would corrupt the map.

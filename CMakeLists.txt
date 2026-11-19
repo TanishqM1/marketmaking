@@ -65,7 +65,7 @@ endif()
 #
 # One library per layer, and the link lines ARE the dependency rules:
 #   types/     header-only, depends on nothing, must compile with all else deleted
-#   codec/     all wire knowledge. depends only on types/.
+#   codec/     all wire knowledge. depends on types/ and state/ (decode updates the books).
 #   transport/ sockets and bytes. depends only on types/ -- NOT on codec/, which is
 #              what keeps receive() swappable for a kernel-bypass implementation.
 #   app/       the only thing that depends on everything. owns the event loop.

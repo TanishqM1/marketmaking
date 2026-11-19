@@ -169,7 +169,7 @@ void test_load_config()
     CHECK_EQ(market.config.size(), 3u);
     CHECK_EQ(market.config.at(AAPL).prev_close, 1752300u); // padded to 8, so it matches the wire
     CHECK_EQ(market.config.at(MSFT).prev_close, 4101500u);
-    CHECK_EQ(market.config.at(AAPL).book, Market::NOT_TRADED);
+    CHECK_EQ(market.config.at(AAPL).book, mm::state::NOT_TRADED);
     CHECK(market.config.contains(std::array<char, 8>{'N', 'V', 'D', 'A', 'L', 'O', 'N', 'G'}));
     CHECK(market.books.capacity() >= 3); // room for every book reserved up front
 }
@@ -205,8 +205,8 @@ void test_new_market()
     std::unique_ptr<Market> market_owner = std::make_unique<Market>();
     Market&                 market       = *market_owner;
     CHECK_EQ(market.books.size(), 0u);
-    CHECK_EQ(market.locate_to_book[0], Market::NOT_TRADED);
-    CHECK_EQ(market.locate_to_book[65535], Market::NOT_TRADED);
+    CHECK_EQ(market.locate_to_book[0], mm::state::NOT_TRADED);
+    CHECK_EQ(market.locate_to_book[65535], mm::state::NOT_TRADED);
     CHECK(!market.seen_r_message);
 }
 
@@ -232,7 +232,7 @@ void test_full_startup_sequence()
     CHECK(market.seen_r_message);
     CHECK_EQ(market.books.size(), 1u);
     CHECK_EQ(market.locate_to_book[14], 0u);
-    CHECK_EQ(market.locate_to_book[7], Market::NOT_TRADED);
+    CHECK_EQ(market.locate_to_book[7], mm::state::NOT_TRADED);
 
     // 3) [R MSFT 22 | A ...]: the A ends startup and everything from it on is the leftover
     std::byte last[39 + 36]{};
@@ -244,7 +244,7 @@ void test_full_startup_sequence()
     CHECK_EQ(market.locate_to_book[22], 1u);
     CHECK_EQ(market.config.at(AAPL).book, 0u);
     CHECK_EQ(market.config.at(MSFT).book, 1u);
-    CHECK_EQ(market.config.at(TSLA).book, Market::NOT_TRADED); // never got an R -> warned about
+    CHECK_EQ(market.config.at(TSLA).book, mm::state::NOT_TRADED); // never got an R -> warned about
 
     CHECK(market.leftover.data() == last + 39);
     CHECK_EQ(market.leftover.size(), 36u);
