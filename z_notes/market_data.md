@@ -118,9 +118,43 @@ X::length                this message's size        -> how far to advance
   bail`. Written that way it can't overflow.
 - **The loop should end at `offset == len` exactly.** A wrong length constant lands you mid-message,
   you read a payload byte as a type, and the rest of the datagram decodes to garbage.
-- ⚠ **Unknown type → unknown length → you can't find the next message**; today the loop would spin
-  on it. Accepted as an assumption (the feed only sends our 7 types) — a real feed opens with System
-  Event `'S'`. Each case keeps its own length check on purpose — see [decisions.md](decisions.md).
+- ⚠ **Unknown type → unknown length → you can't find the next message.** ITCH has no length
+  prefix; the type *is* the length. The 16 types we don't decode are skipped by `MSG_LENGTH[type]`;
+  a non-ITCH type drops the rest of the packet and returns `false`. Each case keeps its own length
+  check on purpose — see [decisions.md](decisions.md).
+
+### Q: why does default hang right now?
+`break` inside a `switch` leaves the **switch**, not the `while`. `default: break;` never moved
+`offset`, so the loop read the same type byte forever. Fixed: every path now advances or returns.
+```
+while (offset < size) {
+    switch (type) {
+        default: break;   // exits the switch only -> same offset -> same byte -> forever
+    }
+}
+```
+**Gotcha:** Release didn't hang. An endless loop with no side effects is UB, so the optimiser cut
+`decode_packet` down to a bare `ret` — Debug hung, Release silently did nothing. Test both. The codec
+test now has a ctest `TIMEOUT 10`, so a hang fails instead of stalling.
+
+### Q: why not a case per type we aren't supporting, that only does offset += size? is that not cleaner?
+Measured slower. At **13+ cases** Apple clang 17 swaps the compare tree for a **jump table**: an array
+of code addresses, jumped through with one indirect `br`. On a mixed feed the CPU mispredicts that
+target more often than a few simple compares.
+
+| variant (our mix: A45 D40 U8 E4 …) | switch becomes | ns/msg |
+|---|---|---|
+| 7 cases + table in `[[unlikely]] default:` (ours) | compare tree | **3.67** |
+| 7 + 16 skip-only cases | jump table | 4.82 (+31%) |
+| same + `[[unlikely]]` | jump table | 5.07 |
+| 10 cases (+ S, H, h) | compare tree | 3.58 |
+
+With P, I, H actually in the feed the table still wins: 4.1 vs 5.0. The HFT rule: the messages that
+are most of the feed (A + D) never pay for rare ones. Keep a struct per type (free, documents the
+spec), keep its length in the table, promote it to a `case` only when it gets real logic.
+
+**Gotcha:** the 13-case cutoff is this compiler on this chip; GCC on x86 decides differently —
+re-measure on deploy. A jump table isn't automatically faster (compare the SBE templateId note below).
 
 ### Our buffer
 One fixed 64 KB array, allocated at startup, overwritten every read. Undersizing silently

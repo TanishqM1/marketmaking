@@ -68,6 +68,43 @@ hurts is the order-map lookup: random, DRAM, ~200 cycles.
 The structs that **do** live in memory here get largest-first ordering and a minimised `sizeof`:
 the order-map entry and the price ladders.
 
+### Q: is struct::MessageLength stored in RAM and it needs to fetch it? or is it in a register?
+Neither — it's inside the instruction. A `static constexpr` member is a name for a number; the
+struct holds no data. The compiler swaps `AddOrder::length` for `36` and encodes it as an
+**immediate**:
+```
+offset += AddOrder::length;   ->   add x0, x0, #36
+```
+The CPU already fetched that instruction to run it, so the 36 is free — same as typing `36`.
+
+A **table** is different: *which* slot isn't known until the packet arrives, so it sits in memory and
+costs a load: `MSG_LENGTH[type]` → `ldrb w8, [x8, w1]` (table address + type byte).
+
+Why firms make every wire offset and length a compile-time constant: field reads fold into the
+load's addressing mode (`ldur x8, [x0, #0xb]` — see Inlining).
+
+### Q: how does MSG_LENGTH work under the hood, why is it faster than a map, and how does indexing work?
+`constexpr` makes the **compiler** run the lambda: `table{}` is 256 zeros, `'A'` is just 65, so
+`table['A'] = AddOrder::length` is `table[65] = 36`. The finished 256 bytes go into the binary —
+nothing runs at startup. At runtime the type byte *is* the index: one `ldrb`.
+
+| lookup (dependent, M4) | ns | does |
+|---|---|---|
+| `std::array` (ours) | **3.0** | key = position, one load |
+| `std::unordered_map` | 9.5 | hash → bucket → pointer to a heap node → compare |
+| `std::map` | 20.9 | tree: ~5 dependent pointer jumps through the heap |
+
+Maps also heap-allocate, so they can't be `constexpr`. Firms direct-index an array whenever the key
+space is small and dense (a type byte, a locate → `locate_to_book`).
+
+**Gotcha:** cast first — `MSG_LENGTH[static_cast<std::uint8_t>(type)]`. `char` is **signed** on Apple
+arm64: byte 0xC1 is −63 and indexes *before* the array. Only libc++ hardening
+(`_LIBCPP_HARDENING_MODE`) or ASan catches a missing cast.
+
+**One cache line?** In Release, slots `'A'` (65)…`'h'` (104) — all 23 real types — sit in one 128 B
+line (the table starts 8 B in). Luck: Debug straddles 2. `alignas(128)` would guarantee it, but only
+the cold `default:` reads the table ⚠️ not expected to be measurable.
+
 ### Struct layout: `alignof`, `sizeof`, padding, bit-fields
 ```
 alignof(struct) = the largest alignof among its members
@@ -166,6 +203,20 @@ return {m_buffer, static_cast<std::size_t>(return_code)};
 | `const` member fn | "doesn't modify the object" — writes are compile errors | `best_bid()` / `best_ask()`. A `const Book&` handed to the strategy can read the touch but never move a cursor |
 
 `const` is for correctness, **not speed**. `const` ≠ `constexpr` (computable at compile time).
+
+### Q: shouldn't we throw an error if the value is not in the table?
+Not on the hot path. `return false` = "this packet is bad, stop reading it"; the caller decides.
+`[[nodiscard]]` makes ignoring it a warning. `main` prints `decode failed: bad packet (66 bytes)` and
+exits 1 for now.
+
+A `throw` costs even when nothing is thrown: the throw path calls runtime functions, so
+`decode_packet` has to save its return address and registers around them. Measured: **4 extra
+register saves/restores on every call, 117 → 139 instructions**, ~5 on the path that always runs.
+The `bool` check in `main` is one predicted branch per packet.
+
+Firms: hot path returns a status and **counts** bad packets, stops quoting that feed, recovers;
+exceptions only at startup, where a bad config *should* throw. Ours is the crude version — #13
+replaces exit-1 with count + stop quoting.
 
 ---
 

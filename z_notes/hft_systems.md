@@ -41,6 +41,28 @@ shard's working set lives in its own core's L1/L2 and nothing else evicts it.
 
 Not a throughput decision. A realistic per-core budget for a 50-symbol market maker is **a few MB**.
 
+### Q: if we scale it up, what is faster? what's the fastest way at a firm's level (asymptotic speed)?
+Handler vs direct routing: both **O(1) per message** (one locate lookup, one book call), equal at
+every size. What grew was the **constant**, and the constant is memory. 2M messages, M4:
+
+| books | book memory | handler | direct (ours) | decode only |
+|---|---|---|---|---|
+| 100 | 3 MB | 17.10 ns | 17.26 | 4.1 |
+| 1,000 | 32 MB | 17.22 | 17.35 | 4.1 |
+| 4,000 | 129 MB | 22.77 | 23.16 | 4.1 |
+| 8,000 | 259 MB | 28.49 | 28.62 | 4.1 |
+
++67% with the same Big-O: at 8,000 books the touched lines don't fit in cache, so each message waits
+on DRAM. On a hot path that's already all O(1), **Big-O rarely decides — cache misses do**. An O(1)
+lookup that misses (~100 ns ⚠️) loses to an O(log n) search in L1 (~1 ns).
+
+What firms do about the constant: **shard by symbol across cores** (each slice fits → the 17 ns row
+on every core, one order map per core); **prefetch** message i+1's book line and map slot while
+handling i; **hugepages** (#24); judge on **p99/p99.9**, where misses show up as spikes.
+
+**Gotcha:** the test spread traffic evenly (worst case) and reached only ~100k live orders; real
+feeds are lopsided ⚠️ and peak higher (#30). Sharding is deferred here — too early.
+
 ### Why not one machine per stock?
 Cost, correlation, and no benefit for most names. Firms **shard by core, not by box**: correlated
 symbols share a machine, the biggest names get a dedicated core, the long tail packs many per core.
@@ -147,7 +169,8 @@ session/     sequence numbers, gap detection — not started
 app/         startup (config + R messages -> books, locate_to_book), then the main loop
 test/        mirrors the source tree
 ```
-Rule: `codec/` never includes `state/` (planned `decode_packet<Handler>`).
+Rule: `codec/` may include `state/` — `decode_packet` calls the books directly (option B,
+[decisions.md](decisions.md)). `state/` never includes `codec/`. `exchange/` shares no code at all.
 
 ### Where the order map lives
 **One order map for every symbol**, a member of `Market` — not inside `Book`. ITCH refs are unique
@@ -229,10 +252,10 @@ leftover = `[A | E]`. TSLA never got an R → reported.
 
 **Gotchas:**
 - `leftover` points into the receive buffer — decode it before the next `receive()`.
-- An R **after** startup hangs the hot loop (R isn't in `MsgType`) — see the Assumptions in
-  [decisions.md](decisions.md).
-- When the hot path gets its handler, give it only `books` (as a `std::span`, which can't grow)
-  and `locate_to_book` — never `config`. Then it *can't* touch the map or resize the vector.
+- An R **after** startup is skipped by its length (R isn't in `MsgType`) → that symbol never gets
+  a book — see the Assumptions in [decisions.md](decisions.md).
+- The hot path gets only `books` (as a `std::span`, which can't grow), `locate_to_book` and
+  `orders` — never `config`. So it *can't* touch the `std::map` or resize the vector.
 
 ### What lives in memory, and why
 | | size | notes |

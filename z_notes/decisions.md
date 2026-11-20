@@ -25,6 +25,9 @@ coming back to the project. ⚠️ = reasoned or estimated, not measured.
 - **No bare typedefs for domain types.** `using Price = int64_t` is the same type as `Qty`, so
   transposing them compiles. A one-field struct is distinct with identical codegen.
 - **Never claim an unmeasured speedup.** Check the asm, then benchmark in Release.
+- **The mock exchange shares no code with the trading system** — not `codec/`, not even `types/`.
+  It keeps its own copy of the wire format, written from the spec, like a real exchange: the spec
+  is the contract.
 
 ---
 
@@ -34,8 +37,8 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 
 | assumption | relied on by | breaks how |
 |---|---|---|
-| After startup, the feed only sends the 7 types we decode: A, F, E, C, X, D, U | `decode_packet` (`codec/itch.cpp`) — an unknown type never advances `offset` | any other type (S, R, P, Q…) → the hot loop spins forever on that byte |
-| R messages arrive as **one burst at the start**, never later | `run_startup` ends at the first non-R; the hot switch has no R case | an intraday R (e.g. a new listing ⚠️) → the hot loop spins on it |
+| Every type on the wire is one of the 23 ITCH 5.0 types | `decode_packet`'s `[[unlikely]] default:` skips the 16 we don't decode by `MSG_LENGTH[type]` | a non-ITCH type (or our own wrong length, landing mid-message) has length 0 → rest of the packet dropped → `false` → `main` prints `decode failed: bad packet (N bytes)`, exits 1. Loud, no longer a hang |
+| R messages arrive as **one burst at the start**, never later | `run_startup` ends at the first non-R; the hot switch has no R case | an intraday R (e.g. a new listing ⚠️) is skipped by its length (39) → that symbol never gets a book |
 | `trading_system` is running before the feed starts | `run_startup` | UDP drops anything sent before the socket binds → the R burst is lost, zero books, startup waits forever |
 | Add orders always have shares > 0 | the bitmap in `state/book.hpp` `add` | a qty-0 add sets a level's bit with nothing behind it → can become best with qty 0 |
 | The side byte is always `'B'` or `'S'` | `decode_add_order` — side starts as Buy, `'S'` → Sell | any other byte silently becomes a Buy |
@@ -64,8 +67,10 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 | order map | hugepages — **deferred** | Linux-only; can't build or measure on macOS | issue **#24** |
 | receive | busy-poll with `MSG_DONTWAIT` | removes sleep/wake jitter (~5–50 µs ⚠️). Still one syscall per poll; kernel bypass impossible on macOS | `udp_receiver.cpp` |
 | decode | **trust exchange field values, validate framing.** Side: start as Buy, `'S'` → Sell; no rejection, no `std::optional` | firm practice — per-field checks cost latency for errors that don't happen. The real bug was `side` uninitialized (UB), which the default fixes | `itch.cpp` `decode_add_order` |
-| decode | no `default:` on the `MsgType` switch | `-Wswitch` then warns if a new enumerator has no `case` | `itch.cpp` |
+| decode | the 16 types we don't decode go through `[[unlikely]] default:` → `offset += MSG_LENGTH[type]`; length 0 → `return false`. **Not** a `case` per skipped type | measured, hot mix: table in `default` 3.67 ns/msg (no change); 16 skip-only `case`s → 13+ cases → Apple clang 17 builds a **jump table** → 4.82 (+31%). Price: `-Wswitch` no longer warns on a missing `case`. Promote a type to a `case` when it gets logic (≤ 12 cases stays a compare tree) — [market_data.md](market_data.md) | `itch.cpp`, `itch.hpp` |
 | decode | **keep** the 7 per-case length checks; don't hoist one `length_for(type)` check + one advance | asm: hoisting adds a 2nd indirect jump on the type byte → ⚠️ likely slower. Cleaner isn't worth slower | `itch.cpp` |
+| decode | length table = `constexpr std::array<std::uint8_t, 256>`, filled at compile time from each type's `length` struct, indexed by `static_cast<std::uint8_t>(type)` | measured, dependent lookups: array **3.0 ns**, `unordered_map` 9.5, `std::map` 20.9 — [cpp.md](cpp.md) | `itch.hpp` `MSG_LENGTH` |
+| decode | bad packet → `[[nodiscard]] bool` `false`, **no `throw`**; `main` prints and exits 1 | asm: a `throw` in `decode_packet` adds 4 register saves/restores to **every** call, thrown or not: 117 → 139 instructions. Exit 1 is a placeholder for #13 (count it, stop quoting) | `itch.cpp`, `main.cpp` |
 | memory | no dynamic memory on the tick-to-trade thread after startup | judged on p99.9 — [hft_systems.md](hft_systems.md) | everywhere |
 | startup | **separate startup loop** for the R burst; R kept **out of `MsgType`** | the hot switch compiles identical (127 instructions, asm checked). An R case in the hot switch reshuffles its compare tree (A: 2 → 3 compares) | `app/startup.cpp`, `itch.cpp` `next_r_message` |
 | startup | config = `TICKER,dollars` CSV, path from `argv[1]`; dollars → ITCH integer at load | locates change daily, so the config can't hold them — R supplies today's. Integer parse, never a float | `startup.cpp` `load_config` |
@@ -73,7 +78,10 @@ Things the code relies on but doesn't check. If one stops being true, the listed
 | startup | before the first R, non-R datagrams are dropped; after it, the first non-R ends startup and the rest of that datagram is `leftover` | before any R there are no books, so nothing droppable matters; the leftover keeps the first orders | `handle_startup_packet` |
 | startup | config ticker with no R → warn and continue; duplicate R ticker or locate → **throw, refuse to start**; `main` catches, prints, exits 1 | startup checks run once, so they're free. A duplicate means a broken feed (e.g. two days replayed together); trading on miswired books is worse than not starting | `bind_r_message`, `report_missing_tickers` |
 | startup | `locate_to_book` = flat `uint16_t[65536]`; books = `std::vector<Book>` + `reserve` | direct index: no hash, no probe, no bounds check; 128 KB vs 512 KB for pointers. Book count is runtime-only; `reserve` → never reallocates | `startup.hpp` `Market` |
-| planned | `decode_packet<Handler>`; the handler gets only `books` (as a span) + `locate_to_book` + `orders`, never `config` | `codec/` never includes `state/`; the hot path can't reach the map or grow the vector | `app/` |
+| routing | **option B**: `decode_packet(packet, books, locate_to_book, orders)` calls `Book::add / execute / cancel / remove / replace` itself in each case. No handler, no router. `codec/` may include `state/`; `state/` never includes `codec/` | same speed as a handler at every size, one fewer file — write-up below | `itch.cpp`, PR #31 |
+| routing | the hot path gets `books` as a `std::span` (can't grow) + `locate_to_book` + `orders`, never `config` | it can't reach the `std::map` or reallocate the vector | `itch.hpp` |
+| routing | `NOT_TRADED` (0xFFFF) and `LOCATES` (65,536) are free `inline constexpr` in `state/book.hpp`, not `Market` members | codec needs them. Inside `Market` (app/) → codec would include app → app → codec → app circle. One definition, zero runtime cost | `book.hpp` |
+| scale | sharding across cores — **deferred** | too early; one core, one shared order map for now — [hft_systems.md](hft_systems.md) | — |
 
 ---
 
@@ -202,3 +210,44 @@ already known non-zero.
 
 **Optional:** a guard word `ask_bits_[WORDS]` with bit 0 set lets the ask loop drop its
 `word < WORDS` check (lands on 4096 = `NO_LEVEL`). Bids can't — there's no index −1.
+
+### Routing — a handler in between (A), or the decoder calls the books (B)?
+**Background.** After decode, each message needs `locate → book → book call`. Who does that hop?
+```
+A  decode → handler.on_add(locate, fields)                 codec/itch.hpp (template)
+   on_add → books[locate_to_book[locate]].add(...)         app/router.hpp
+B  decode → book = locate_to_book[locate]                  codec/itch.cpp, one place
+          → if (book != NOT_TRADED) books[book].add(orders, ref, side, price, shares)
+```
+Everything before decode is the same in both: exchange → UDP → `receive()` → `decode_packet`.
+`Market` is **our** memory (books, `locate_to_book`, `orders`), not the exchange — the exchange only
+ever sends bytes.
+
+| | A · handler | B · decoder calls books (ours) |
+|---|---|---|
+| 100 books | 17.00 ns/msg | 17.18 |
+| 8,000 books | 28.49 | 28.62 |
+| files | + `router.hpp`; `decode_packet` moves to the header (templates need the body) | none new |
+| codec depends on | `types/` | `types/` + `state/` |
+| test the parser alone | yes, with a fake handler | only through book state (real books + a heap `OrderMap`) |
+| 2nd feed, recorder, prefetch | add or chain handlers | edit the decoder |
+
+Same speed: the 4 extra arguments ride in registers x2–x5, set once per packet (~6 instructions
+over ~48 messages). `Book::add` / `reduce` are real calls (`bl`) in **both** — the next target.
+
+**Firm practice.** Every public design splits parser from book: Columbia's FPGA ITCH ticker plant
+(parser → book-builder stages), vendor handlers (B2BITS `on_add_order` callbacks, OnixS listeners),
+CppTrader (ITCH handler + separate market manager). Carl Cook (Optiver, CppCon 2017): templates over
+virtual calls — A's shape. ⚠️ vendors and talks, not firm code. In-house, one feed, one book: B is
+common and not wrong.
+
+**Decision:** B (2026-11-17). Equal speed, simpler. The rule that argued for A ("the mock exchange
+shares `codec/`") was dropped instead — the exchange now shares nothing. Revisit A if a second feed
+or consumer shows up.
+
+**Example:** `A, locate 13, ref 5, Buy 100 @ $175.10` → `locate_to_book[13] = 0` →
+`books[0].add(orders, 5, Buy, 1751000, 100)` → best bid 17510 × 100.
+
+**Gotcha:** argument order. ITCH sends shares *before* price, `add` takes price *before* qty, and U
+has two 8-byte refs side by side. A swap compiles and silently corrupts the book. The routing tests
+catch both (swap price/shares → 8 failures, swap U's refs → 5).
